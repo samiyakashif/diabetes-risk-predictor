@@ -1,0 +1,15 @@
+# Environments
+.env
+*.pyc
+__pycache__/
+
+# Data & models (documented, not committed)
+ml/data/
+ml/models/
+
+# Node
+node_modules/
+.next/
+
+# OS
+.DS_Store
