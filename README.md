@@ -7,3 +7,9 @@ Status: In Progress
 ## Regenerating the trained model
 The trained model files (`ml/models/`) are not included in this repo. 
 To regenerate them, run `ml/notebooks/02_model_training.ipynb` from top to bottom.
+
+## Running the backend
+cd backend
+conda activate diabetes-backend
+pip install -r requirements.txt
+uvicorn main:app --reload
