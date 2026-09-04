@@ -10,6 +10,8 @@ from pydantic import BaseModel
 import joblib
 import numpy as np
 import json
+from auth import get_current_user_id
+from models import HealthRecord, Prediction
 
 app = FastAPI()
 def get_db():
@@ -90,30 +92,55 @@ def read_root():
     return {"message": "Diabetes Risk Predictor API is running"}
 
 @app.post("/predict")
-def predict(patient: PatientData):
+def predict(
+    patient: PatientData,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    data = patient.dict()
+
+    for col in ['Glucose', 'BloodPressure', 'SkinThickness', 'Insulin', 'BMI']:
+        if data[col] == 0:
+            data[col] = medians[col]
+
     input_data = np.array([[
-        patient.Pregnancies,
-        patient.Glucose,
-        patient.BloodPressure,
-        patient.SkinThickness,
-        patient.Insulin,
-        patient.BMI,
-        patient.DiabetesPedigree,
-        patient.Age
+        data['Pregnancies'], data['Glucose'], data['BloodPressure'],
+        data['SkinThickness'], data['Insulin'], data['BMI'],
+        data['DiabetesPedigree'], data['Age']
     ]])
 
     input_scaled = scaler.transform(input_data)
-
     prediction = model.predict(input_scaled)[0]
     probability = model.predict_proba(input_scaled)[0][1]
 
-    print(prediction)
-    print(probability)
+    health_record = HealthRecord(
+        user_id=user_id,
+        pregnancies=data['Pregnancies'],
+        glucose=data['Glucose'],
+        blood_pressure=data['BloodPressure'],
+        skin_thickness=data['SkinThickness'],
+        insulin=data['Insulin'],
+        bmi=data['BMI'],
+        diabetes_pedigree=data['DiabetesPedigree'],
+        age=data['Age']
+    )
+    db.add(health_record)
+    db.commit()
+    db.refresh(health_record)
+
+    prediction_record = Prediction(
+        health_record_id=health_record.id,
+        prediction=int(prediction),
+        risk_probability=round(float(probability), 4)
+    )
+    db.add(prediction_record)
+    db.commit()
 
     return {
         "prediction": int(prediction),
         "risk_label": "Diabetic" if prediction == 1 else "Not Diabetic",
-        "risk_probability": round(float(probability), 4)
+        "risk_probability": round(float(probability), 4),
+        "health_record_id": health_record.id
     }
 
 @app.post("/register")
