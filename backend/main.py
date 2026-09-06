@@ -1,19 +1,30 @@
-from sqlalchemy.orm import Session
-from fastapi import Depends, HTTPException
-from database import SessionLocal
-from models import User
-from schemas import UserCreate, UserLogin, Token
-from auth import hash_password, verify_password, create_access_token
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import joblib
 import numpy as np
 import json
-from auth import get_current_user_id
-from models import HealthRecord, Prediction
+
+from database import SessionLocal
+from models import User, HealthRecord, Prediction
+from schemas import UserCreate, UserLogin, Token
+from auth import hash_password, verify_password, create_access_token, get_current_user_id
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -21,60 +32,12 @@ def get_db():
     finally:
         db.close()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 model = joblib.load('../ml/models/diabetes_model.pkl')
 scaler = joblib.load('../ml/models/scaler.pkl')
 
 with open('../ml/models/medians.json') as f:
     medians = json.load(f)
-
-# ... rest of your existing code (PatientData, endpoints) stays unchanged below this
-from fastapi import FastAPI
-
-app = FastAPI()
-
-@app.get("/")
-def read_root():
-    return {"message": "Diabetes Risk Predictor API is running"}
-
-## update 2-----------------------
-from fastapi import FastAPI
-import joblib
-import numpy as np
-
-app = FastAPI()
-
-# Load the model and scaler once, when the server starts
-model = joblib.load('../ml/models/diabetes_model.pkl')
-scaler = joblib.load('../ml/models/scaler.pkl')
-
-@app.get("/")
-def read_root():
-    return {"message": "Diabetes Risk Predictor API is running"}
-
-@app.get("/model-check")
-def model_check():
-    return {"model_loaded": True, "model_type": str(type(model).__name__)}
-
-# updatre 3-------------------------
-from fastapi import FastAPI
-from pydantic import BaseModel
-import joblib
-import numpy as np
-
-app = FastAPI()
-
-model = joblib.load('../ml/models/diabetes_model.pkl')
-scaler = joblib.load('../ml/models/scaler.pkl')
-
 
 
 class PatientData(BaseModel):
@@ -87,9 +50,16 @@ class PatientData(BaseModel):
     DiabetesPedigree: float
     Age: int
 
+
 @app.get("/")
 def read_root():
     return {"message": "Diabetes Risk Predictor API is running"}
+
+
+@app.get("/model-check")
+def model_check():
+    return {"model_loaded": True, "model_type": str(type(model).__name__)}
+
 
 @app.post("/predict")
 def predict(
@@ -142,6 +112,7 @@ def predict(
         "risk_probability": round(float(probability), 4),
         "health_record_id": health_record.id
     }
+
 
 @app.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):

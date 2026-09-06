@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Standalone Vite reference project (consumed into src/ piece by piece):
+    "figma_design_code/**",
   ]),
 ]);
 
