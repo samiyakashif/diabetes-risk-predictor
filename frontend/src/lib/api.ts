@@ -3,6 +3,7 @@ import type {
 } from "@/types/health";
 import type {
   PredictionResult,
+  PredictionRecord,
 } from "@/types/prediction";
 import type {
   Token,
@@ -93,5 +94,9 @@ export const api = {
       },
       true
     );
+  },
+
+  getPredictions() {
+    return request<PredictionRecord[]>("/predictions", {}, true);
   },
 };

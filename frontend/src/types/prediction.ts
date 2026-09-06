@@ -7,6 +7,22 @@ export interface PredictionResult {
   health_record_id: number;
 }
 
+export interface PredictionRecord {
+  prediction_id: number;
+  date: string;
+  prediction: 0 | 1;
+  risk_probability: number;
+  risk_label: "Diabetic" | "Not Diabetic";
+  glucose: number;
+  blood_pressure: number;
+  skin_thickness: number;
+  insulin: number;
+  bmi: number;
+  diabetes_pedigree: number;
+  age: number;
+  pregnancies: number;
+}
+
 export interface RiskConfig {
   label: string;
   color: string;

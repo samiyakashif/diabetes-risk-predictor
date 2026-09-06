@@ -114,6 +114,38 @@ def predict(
     }
 
 
+@app.get("/predictions")
+def get_predictions(
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    rows = (
+        db.query(Prediction, HealthRecord)
+        .join(HealthRecord, Prediction.health_record_id == HealthRecord.id)
+        .filter(HealthRecord.user_id == user_id)
+        .order_by(Prediction.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "prediction_id": pred.id,
+            "date": pred.created_at.isoformat(),
+            "prediction": pred.prediction,
+            "risk_probability": pred.risk_probability,
+            "risk_label": "Diabetic" if pred.prediction == 1 else "Not Diabetic",
+            "glucose": rec.glucose,
+            "blood_pressure": rec.blood_pressure,
+            "skin_thickness": rec.skin_thickness,
+            "insulin": rec.insulin,
+            "bmi": rec.bmi,
+            "diabetes_pedigree": rec.diabetes_pedigree,
+            "age": rec.age,
+            "pregnancies": rec.pregnancies,
+        }
+        for pred, rec in rows
+    ]
+
+
 @app.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.email == user.email).first()

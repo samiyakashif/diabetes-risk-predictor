@@ -2,16 +2,11 @@
 
 import { HelpCircle } from "lucide-react";
 
-interface InputFieldProps {
+interface InputFieldProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "onChange"> {
   label: string;
-  type?: string;
-  placeholder?: string;
   tooltip?: string;
   value?: string;
   onChange?: (value: string) => void;
-  name?: string;
-  required?: boolean;
-  autoComplete?: string;
 }
 
 export function InputField({
@@ -21,9 +16,7 @@ export function InputField({
   tooltip,
   value,
   onChange,
-  name,
-  required,
-  autoComplete,
+  ...props
 }: InputFieldProps) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -40,12 +33,10 @@ export function InputField({
       </div>
       <input
         type={type}
-        name={name}
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange?.(e.target.value)}
-        required={required}
-        autoComplete={autoComplete}
+        {...props}
         className="w-full px-3.5 py-2.5 bg-background border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
       />
     </div>
