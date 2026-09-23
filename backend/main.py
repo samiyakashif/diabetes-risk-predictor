@@ -10,6 +10,14 @@ from database import SessionLocal
 from models import User, HealthRecord, Prediction
 from schemas import UserCreate, UserLogin, Token
 from auth import hash_password, verify_password, create_access_token, get_current_user_id
+from training import (
+    deploy_model,
+    get_job,
+    get_latest_completed,
+    model_labels,
+    start_training,
+    valid_model_ids,
+)
 
 app = FastAPI()
 
@@ -51,6 +59,20 @@ class PatientData(BaseModel):
     Age: int
 
 
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class TrainRequest(BaseModel):
+    models: list[str] = ["neural", "svm", "dt", "lr"]
+
+
+class DeployRequest(BaseModel):
+    job_id: str
+    model: str
+
+
 @app.get("/")
 def read_root():
     return {"message": "Diabetes Risk Predictor API is running"}
@@ -59,6 +81,67 @@ def read_root():
 @app.get("/model-check")
 def model_check():
     return {"model_loaded": True, "model_type": str(type(model).__name__)}
+
+
+@app.post("/admin/train")
+def admin_train(
+    payload: TrainRequest,
+    user_id: int = Depends(get_current_user_id),
+):
+    valid = valid_model_ids()
+    unknown = [mid for mid in payload.models if mid not in valid]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown model ids: {unknown}")
+    return start_training(payload.models)
+
+
+@app.get("/admin/train/{job_id}")
+def admin_train_status(
+    job_id: str,
+    user_id: int = Depends(get_current_user_id),
+):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Training job not found")
+    return job
+
+
+@app.get("/admin/models/latest")
+def admin_latest_models(
+    user_id: int = Depends(get_current_user_id),
+):
+    job = get_latest_completed()
+    if not job:
+        raise HTTPException(status_code=404, detail="No completed training jobs yet")
+    return job
+
+
+@app.post("/admin/deploy")
+def admin_deploy(
+    payload: DeployRequest,
+    user_id: int = Depends(get_current_user_id),
+):
+    global model, scaler
+
+    if payload.model not in model_labels():
+        raise HTTPException(status_code=422, detail=f"Unknown model id: {payload.model}")
+
+    try:
+        new_model, new_scaler = deploy_model(payload.job_id, payload.model)
+    except LookupError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    model = new_model
+    scaler = new_scaler
+
+    return {
+        "message": f"Deployed {model_labels()[payload.model]} to production",
+        "model_id": payload.model,
+        "model_label": model_labels()[payload.model],
+        "model_type": str(type(new_model).__name__),
+    }
 
 
 @app.post("/predict")
@@ -173,3 +256,22 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
 
     access_token = create_access_token(data={"sub": str(db_user.id)})
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.put("/change-password")
+def change_password(
+    payload: ChangePassword,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not verify_password(payload.current_password, db_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    db_user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+
+    return {"message": "Password updated successfully"}

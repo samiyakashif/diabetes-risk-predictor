@@ -6,6 +6,12 @@ __pycache__/
 # Data & models (documented, not committed)
 ml/data/
 ml/models/
+!ml/models/
+ml/models/*.pkl
+ml/models/*.joblib
+ml/models/*.json
+ml/models/trained/
+!ml/models/train_models.py
 
 # Node
 node_modules/

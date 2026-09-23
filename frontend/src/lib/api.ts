@@ -10,6 +10,10 @@ import type {
   UserCreate,
   UserLogin,
 } from "@/types/user";
+import type {
+  DeployResponse,
+  TrainingJob,
+} from "@/types/training";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -98,5 +102,49 @@ export const api = {
 
   getPredictions() {
     return request<PredictionRecord[]>("/predictions", {}, true);
+  },
+
+  changePassword(currentPassword: string, newPassword: string) {
+    return request<{ message: string }>(
+      "/change-password",
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+        }),
+      },
+      true
+    );
+  },
+
+  trainModels(models: string[]) {
+    return request<TrainingJob>(
+      "/admin/train",
+      {
+        method: "POST",
+        body: JSON.stringify({ models }),
+      },
+      true
+    );
+  },
+
+  getTrainingStatus(jobId: string) {
+    return request<TrainingJob>(`/admin/train/${jobId}`, {}, true);
+  },
+
+  getLatestTraining() {
+    return request<TrainingJob>("/admin/models/latest", {}, true);
+  },
+
+  deployModel(jobId: string, model: string) {
+    return request<DeployResponse>(
+      "/admin/deploy",
+      {
+        method: "POST",
+        body: JSON.stringify({ job_id: jobId, model }),
+      },
+      true
+    );
   },
 };

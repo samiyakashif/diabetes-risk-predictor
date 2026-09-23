@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Bell, CheckCircle, Settings, Shield } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
+import { api, ApiError, clearToken } from "@/lib/api";
 import type { Role } from "@/types/user";
 
 const PROFILE_DEFAULTS: Record<string, { name: string; email: string }> = {
@@ -22,6 +24,7 @@ export function SettingsView({ role }: { role: Role }) {
   const key = role || "patient";
   const defaults = PROFILE_DEFAULTS[key];
   const roleLabel = ROLE_LABEL[key];
+  const router = useRouter();
 
   const [profileName, setProfileName] = useState(defaults.name);
   const [profileEmail, setProfileEmail] = useState(defaults.email);
@@ -31,6 +34,7 @@ export function SettingsView({ role }: { role: Role }) {
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
   const [pwError, setPwError] = useState("");
+  const [pwSaving, setPwSaving] = useState(false);
   const [pwSaved, setPwSaved] = useState(false);
   const [showCurrent, setShowCurrent] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -51,7 +55,7 @@ export function SettingsView({ role }: { role: Role }) {
     window.setTimeout(() => setProfileSaved(false), 2500);
   };
 
-  const savePassword = () => {
+  const savePassword = async () => {
     setPwError("");
     if (!currentPw) {
       setPwError("Current password is required.");
@@ -65,11 +69,26 @@ export function SettingsView({ role }: { role: Role }) {
       setPwError("Passwords do not match.");
       return;
     }
-    setPwSaved(true);
-    setCurrentPw("");
-    setNewPw("");
-    setConfirmPw("");
-    window.setTimeout(() => setPwSaved(false), 2500);
+    setPwSaving(true);
+    try {
+      await api.changePassword(currentPw, newPw);
+      setPwSaved(true);
+      setCurrentPw("");
+      setNewPw("");
+      setConfirmPw("");
+      window.setTimeout(() => setPwSaved(false), 2500);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        clearToken();
+        router.replace("/login");
+        return;
+      }
+      setPwError(
+        err instanceof ApiError ? err.message : "Something went wrong. Please try again."
+      );
+    } finally {
+      setPwSaving(false);
+    }
   };
 
   const toggleNotif = (key: string) =>
@@ -334,8 +353,8 @@ export function SettingsView({ role }: { role: Role }) {
             )}
 
             <div className="flex items-center gap-3 pt-1">
-              <Button variant="primary" onClick={savePassword}>
-                Update Password
+              <Button variant="primary" onClick={savePassword} disabled={pwSaving}>
+                {pwSaving ? "Updating..." : "Update Password"}
               </Button>
               {pwSaved && (
                 <span className="flex items-center gap-1.5 text-sm font-medium text-[#2A9E6B] fade-in-up">

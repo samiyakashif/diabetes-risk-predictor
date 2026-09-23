@@ -15,8 +15,12 @@ function getAuthSnapshot() {
   return getToken();
 }
 
+function getServerSnapshot(): string | null {
+  return null;
+}
+
 export function useAuth() {
-  const token = useSyncExternalStore(subscribe, getAuthSnapshot, getAuthSnapshot);
+  const token = useSyncExternalStore(subscribe, getAuthSnapshot, getServerSnapshot);
 
   const login = useCallback((accessToken: string, role: Role) => {
     setToken(accessToken);
