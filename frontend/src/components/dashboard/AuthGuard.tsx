@@ -25,13 +25,21 @@ export function AuthGuard({
   const blocked =
     Boolean(role) && Boolean(minRole) && ROLE_RANK[role as Role] < ROLE_RANK[minRole as Role];
 
+  const misplaced = Boolean(role) && minRole === "patient" && ROLE_RANK[role as Role] > ROLE_RANK.patient;
+
   useEffect(() => {
     if (!isAuthenticated) {
       router.replace("/login");
       return;
     }
-    if (role && minRole && ROLE_RANK[role] < ROLE_RANK[minRole]) {
-      router.replace(ROLE_HOME[role]);
+    if (role) {
+      if (minRole && ROLE_RANK[role] < ROLE_RANK[minRole]) {
+        router.replace(ROLE_HOME[role]);
+        return;
+      }
+      if (minRole === "patient" && ROLE_RANK[role] > ROLE_RANK.patient) {
+        router.replace(ROLE_HOME[role]);
+      }
     }
   }, [isAuthenticated, role, minRole, router]);
 
@@ -51,7 +59,7 @@ export function AuthGuard({
     );
   }
 
-  if (blocked) {
+  if (blocked || misplaced) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <p className="text-sm text-muted-foreground">Redirecting...</p>
