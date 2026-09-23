@@ -299,6 +299,11 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     return {"message": "User registered successfully", "user_id": new_user.id}
 
 
+@app.get("/me", response_model=UserOut)
+def get_me(user: User = Depends(get_current_user)):
+    return user
+
+
 FACTOR_LABELS = {
     "Pregnancies": "Pregnancies",
     "Glucose": "Glucose (mg/dL)",
