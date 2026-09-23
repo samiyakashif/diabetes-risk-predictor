@@ -4,7 +4,7 @@ import { PredictionProvider } from "@/components/prediction/PredictionProvider";
 
 export default function PatientLayout({ children }: { children: React.ReactNode }) {
   return (
-    <AuthGuard>
+    <AuthGuard minRole={"patient"}>
       <PredictionProvider>
         <div className="flex min-h-screen bg-background">
           <Sidebar role="patient" />

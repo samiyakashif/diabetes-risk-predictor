@@ -8,6 +8,7 @@ import { InputField } from "@/components/ui/InputField";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
+import { ROLE_HOME } from "@/types/user";
 import type { Role } from "@/types/user";
 
 const ROLE_OPTIONS: { value: Role; label: string }[] = [
@@ -15,12 +16,6 @@ const ROLE_OPTIONS: { value: Role; label: string }[] = [
   { value: "provider", label: "Provider" },
   { value: "admin", label: "Admin" },
 ];
-
-const ROLE_DESTINATIONS: Record<string, string> = {
-  patient: "/patient",
-  provider: "/provider",
-  admin: "/admin",
-};
 
 export default function LoginPage() {
   const router = useRouter();
@@ -38,8 +33,15 @@ export default function LoginPage() {
 
     try {
       const token = await api.login({ email, password });
-      login(token.access_token, selectedRole as Role);
-      router.push(ROLE_DESTINATIONS[selectedRole] ?? "/patient");
+      const user = await login(token.access_token);
+      if (!user) {
+        setError("Could not load your profile. Please try again.");
+        return;
+      }
+      if (user.role !== selectedRole) {
+        setError(`This account is registered as ${user.role}. Redirecting to ${user.role} dashboard.`);
+      }
+      router.push(ROLE_HOME[user.role]);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Could not connect to server"

@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { api } from "@/lib/api";
 import { clearToken, getToken, setToken } from "@/lib/api";
-import type { Role } from "@/types/user";
-
-const ROLE_KEY = "diabeta_role";
+import type { User } from "@/types/user";
 
 function subscribe(callback: () => void) {
   window.addEventListener("storage", callback);
@@ -21,29 +20,66 @@ function getServerSnapshot(): string | null {
 
 export function useAuth() {
   const token = useSyncExternalStore(subscribe, getAuthSnapshot, getServerSnapshot);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const login = useCallback((accessToken: string, role: Role) => {
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.resolve();
+      if (!getToken()) {
+        if (!cancelled) {
+          setUser(null);
+          setLoading(false);
+        }
+        return;
+      }
+      try {
+        const me = await api.getMe();
+        if (!cancelled) setUser(me);
+      } catch {
+        if (!cancelled) {
+          clearToken();
+          setUser(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const login = useCallback(async (accessToken: string): Promise<User | null> => {
     setToken(accessToken);
-    if (role) localStorage.setItem(ROLE_KEY, role);
     window.dispatchEvent(new Event("storage"));
+    try {
+      const me = await api.getMe();
+      setUser(me);
+      setLoading(false);
+      return me;
+    } catch {
+      clearToken();
+      setUser(null);
+      setLoading(false);
+      return null;
+    }
   }, []);
 
   const logout = useCallback(() => {
+    localStorage.removeItem("diabeta_role");
     clearToken();
-    localStorage.removeItem(ROLE_KEY);
+    setUser(null);
     window.dispatchEvent(new Event("storage"));
-  }, []);
-
-  const getRole = useCallback((): Role => {
-    if (typeof window === "undefined") return null;
-    return (localStorage.getItem(ROLE_KEY) as Role) ?? null;
   }, []);
 
   return {
     isAuthenticated: Boolean(token),
-    token,
+    user,
+    role: user?.role ?? null,
+    loading,
     login,
     logout,
-    getRole,
   };
 }

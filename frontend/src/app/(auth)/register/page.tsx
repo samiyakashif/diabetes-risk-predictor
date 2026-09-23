@@ -8,13 +8,8 @@ import { Button } from "@/components/ui/Button";
 import { InputField } from "@/components/ui/InputField";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { ROLE_HOME } from "@/types/user";
 import type { Role } from "@/types/user";
-
-const ROLE_DESTINATIONS: Record<string, string> = {
-  patient: "/patient",
-  provider: "/provider",
-  admin: "/admin",
-};
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -32,11 +27,16 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      await api.register({ full_name: fullName, email, password });
+      await api.register({
+        full_name: fullName,
+        email,
+        password,
+        role: selectedRole as Role,
+      });
       // Auto-login after successful registration
       const token = await api.login({ email, password });
-      login(token.access_token, selectedRole as Role);
-      router.push(ROLE_DESTINATIONS[selectedRole] ?? "/patient");
+      const user = await login(token.access_token);
+      router.push(ROLE_HOME[user?.role ?? "patient"]);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Could not connect to server"

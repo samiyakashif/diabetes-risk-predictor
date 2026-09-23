@@ -45,13 +45,13 @@ const ADMIN_NAV = [
   { label: "Settings", href: "/admin/settings", icon: Settings },
 ];
 
-const NAV_BY_ROLE: Record<NonNullable<Role>, { label: string; href: string; icon: typeof Home }[]> = {
+const NAV_BY_ROLE: Record<Role, { label: string; href: string; icon: typeof Home }[]> = {
   patient: PATIENT_NAV,
   provider: PROVIDER_NAV,
   admin: ADMIN_NAV,
 };
 
-export function Sidebar({ role }: { role: NonNullable<Role> }) {
+export function Sidebar({ role }: { role: Role }) {
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAuth();

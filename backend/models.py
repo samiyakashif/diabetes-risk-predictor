@@ -11,6 +11,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String)
+    role = Column(String, default="patient", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     health_records = relationship("HealthRecord", back_populates="user")

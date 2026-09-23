@@ -1,9 +1,16 @@
-export type Role = "patient" | "provider" | "admin" | null;
+export type Role = "patient" | "provider" | "admin";
+
+export const ROLE_HOME: Record<Role, string> = {
+  patient: "/patient",
+  provider: "/provider",
+  admin: "/admin",
+};
 
 export interface UserCreate {
   email: string;
   password: string;
   full_name: string;
+  role?: Role;
 }
 
 export interface UserLogin {
@@ -20,5 +27,6 @@ export interface User {
   id: number;
   email: string;
   full_name: string | null;
+  role: Role;
   created_at?: string;
 }

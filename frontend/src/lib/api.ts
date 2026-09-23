@@ -7,6 +7,7 @@ import type {
 } from "@/types/prediction";
 import type {
   Token,
+  User,
   UserCreate,
   UserLogin,
 } from "@/types/user";
@@ -14,6 +15,11 @@ import type {
   DeployResponse,
   TrainingJob,
 } from "@/types/training";
+import type {
+  AdminOverview,
+  PatientDetail,
+  ProviderOverview,
+} from "@/types/provider";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -89,6 +95,10 @@ export const api = {
     });
   },
 
+  getMe() {
+    return request<User>("/me", {}, true);
+  },
+
   predict(features: HealthFeatures) {
     return request<PredictionResult>(
       "/predict",
@@ -146,5 +156,17 @@ export const api = {
       },
       true
     );
+  },
+
+  getProviderOverview() {
+    return request<ProviderOverview>("/provider/overview", {}, true);
+  },
+
+  getPatientDetail(patientId: number) {
+    return request<PatientDetail>(`/provider/patients/${patientId}`, {}, true);
+  },
+
+  getAdminOverview() {
+    return request<AdminOverview>("/admin/overview", {}, true);
   },
 };

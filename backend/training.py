@@ -5,11 +5,13 @@ Job state is kept in-memory (lost on server restart), which is acceptable
 for this single-instance application.
 """
 
+import json
 import os
 import sys
 import threading
 import uuid
 from datetime import datetime, timezone
+from joblib import load as joblib_load
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "ml", "models"))
@@ -112,9 +114,49 @@ def get_job(job_id: str) -> dict | None:
 
 def get_latest_completed() -> dict | None:
     completed = [j for j in JOBS.values() if j.get("status") == "complete"]
-    if not completed:
+    if completed:
+        return max(completed, key=lambda j: j.get("finished_at") or "")
+    job_id = latest_completed_job_dir()
+    if not job_id:
         return None
-    return max(completed, key=lambda j: j.get("finished_at") or "")
+    tm = _import_trainer()
+    try:
+        with open(os.path.join(tm.ARTIFACT_DIR, job_id, "results.json")) as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return {
+        "job_id": payload.get("job_id", job_id),
+        "status": "complete",
+        "progress": 100,
+        "current_step": "Training complete",
+        "started_at": None,
+        "finished_at": None,
+        "models": payload.get("models", []),
+        "results": payload.get("results", {}),
+        "best_model": payload.get("best_model"),
+        "n_records": payload.get("n_records"),
+        "error": None,
+    }
+
+
+def latest_completed_job_dir() -> str | None:
+    """Newest artifact dir on disk holding a results.json (survives restarts)."""
+    tm = _import_trainer()
+    try:
+        candidates = [
+            entry
+            for entry in os.listdir(tm.ARTIFACT_DIR)
+            if os.path.isfile(os.path.join(tm.ARTIFACT_DIR, entry, "results.json"))
+        ]
+    except FileNotFoundError:
+        return None
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda d: os.path.getmtime(os.path.join(tm.ARTIFACT_DIR, d, "results.json")),
+    )
 
 
 def deploy_model(job_id: str, model_id: str):
@@ -126,3 +168,74 @@ def deploy_model(job_id: str, model_id: str):
 
     tm = _import_trainer()
     return tm.deploy_models(job_id, model_id)
+
+
+def job_counts() -> dict:
+    with _JOBS_LOCK:
+        values = list(JOBS.values())
+    return {
+        "total": len(values),
+        "running": sum(1 for j in values if j.get("status") == "running"),
+        "completed": sum(1 for j in values if j.get("status") == "complete"),
+        "failed": sum(1 for j in values if j.get("status") == "failed"),
+    }
+
+
+def latest_completed_job_id() -> str | None:
+    job = get_latest_completed()
+    return job["job_id"] if job else None
+
+
+_JOB_PIPELINE_CACHE: dict[str, tuple] = {}
+
+
+def job_model_scores(job_id: str | None, raw_row: list[float]) -> list[dict] | None:
+    """Risk scores (0-100) from every trained model in the latest completed job.
+
+    Models are loaded lazily and cached per job. Returns ``None`` when no
+    completed job (or its artifacts) exists yet.
+    """
+    if not job_id:
+        return None
+
+    if job_id not in _JOB_PIPELINE_CACHE:
+        tm = _import_trainer()
+        job_dir = os.path.join(tm.ARTIFACT_DIR, job_id)
+        scaler_path = os.path.join(job_dir, "scaler.joblib")
+        if not os.path.isdir(job_dir) or not os.path.isfile(scaler_path):
+            return None
+
+        scaler = joblib_load(scaler_path)
+        models = {}
+        for model_id in tm.MODEL_LABELS.keys():
+            path = os.path.join(job_dir, f"{model_id}_model.joblib")
+            if os.path.isfile(path):
+                models[model_id] = joblib_load(path)
+        feature_names = None
+        try:
+            with open(os.path.join(job_dir, "feature_order.json")) as f:
+                feature_names = json.load(f)
+        except (OSError, ValueError):
+            feature_names = None
+        _JOB_PIPELINE_CACHE[job_id] = (scaler, models, feature_names)
+
+    scaler, models, feature_names = _JOB_PIPELINE_CACHE[job_id]
+    if not models:
+        return None
+
+    import numpy as np
+
+    if feature_names:
+        import pandas as pd
+
+        input_frame = pd.DataFrame([raw_row], columns=feature_names)
+        scaled = scaler.transform(input_frame)
+    else:
+        scaled = scaler.transform(np.array([raw_row]))
+    return [
+        {
+            "model": _import_trainer().MODEL_LABELS[model_id],
+            "score": round(float(ml.predict_proba(scaled)[0][1]) * 100),
+        }
+        for model_id, ml in sorted(models.items())
+    ]
