@@ -1,16 +1,18 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
+import csv
+import io
 import joblib
 import numpy as np
 import json
 from datetime import date, datetime, time
 
 from database import SessionLocal
-from models import User, HealthRecord, Prediction
+from models import User, HealthRecord, Prediction, GeneratedReport
 from schemas import UserCreate, UserLogin, UserOut, Token
 from auth import (
     hash_password,
@@ -488,8 +490,6 @@ def admin_overview(
         "deployed_model": DEPLOYED_MODEL,
         "latest_job_id": latest_completed_job_id(),
     }
-def get_me(user: User = Depends(get_current_user)):
-    return user
 
 
 @app.post("/login", response_model=Token)
@@ -520,3 +520,636 @@ def change_password(
     db.commit()
 
     return {"message": "Password updated successfully"}
+
+
+REPORT_TYPES = {
+    "patient": ["individual_risk", "monthly_summary"],
+    "provider": ["panel_overview", "clinical_insights"],
+    "admin": ["model_performance", "system_usage", "user_analytics", "training_summary"],
+}
+
+REPORT_TITLES = {
+    "individual_risk": "Individual Risk Report",
+    "monthly_summary": "Monthly Prediction Summary",
+    "panel_overview": "Provider Panel Overview",
+    "clinical_insights": "Clinical Insights",
+    "model_performance": "Model Performance Report",
+    "system_usage": "System Usage Report",
+    "user_analytics": "User Analytics Report",
+    "training_summary": "Training Summary Report",
+}
+
+FACTOR_UNITS = {
+    "Pregnancies": "",
+    "Glucose": " mg/dL",
+    "BloodPressure": " mmHg",
+    "SkinThickness": " mm",
+    "Insulin": " µU/mL",
+    "BMI": "",
+    "DiabetesPedigree": "",
+    "Age": " yrs",
+}
+
+
+def _fmt(value, suffix="", digits=1):
+    if value is None:
+        return "Not recorded"
+    if isinstance(value, float):
+        if value.is_integer():
+            return f"{int(value)}{suffix}"
+        return f"{value:.{digits}f}{suffix}"
+    return f"{value}{suffix}"
+
+
+def _field_value(value, key):
+    return value if value not in (None, 0) else medians.get(key, None)
+
+
+def _parse_report_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid date: {value}")
+
+
+def _get_owned_report(report_id: int, user: User, db: Session) -> GeneratedReport:
+    report = db.query(GeneratedReport).filter(GeneratedReport.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if report.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="You do not own this report")
+    return report
+
+
+def _summary_to_csv(summary: dict) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([f"DiabetaAI - {summary['title']}"])
+    writer.writerow(["Generated", summary.get("generated_at", "")])
+    writer.writerow(["Prepared for", summary.get("owner", "")])
+    writer.writerow([])
+    for section in summary.get("sections", []):
+        writer.writerow([section["title"]])
+        writer.writerow(["Field", "Value"])
+        for row in section.get("rows", []):
+            writer.writerow([row["label"], row["value"]])
+        writer.writerow([])
+    return buffer.getvalue()
+
+
+def _latest_prediction_row(db: Session, user_id: int):
+    return (
+        db.query(Prediction, HealthRecord)
+        .join(HealthRecord, Prediction.health_record_id == HealthRecord.id)
+        .filter(HealthRecord.user_id == user_id)
+        .order_by(Prediction.created_at.desc())
+        .first()
+    )
+
+
+def _prediction_rows(db: Session, user_id: int, start: date | None = None, end: date | None = None):
+    rows = (
+        db.query(Prediction, HealthRecord)
+        .join(HealthRecord, Prediction.health_record_id == HealthRecord.id)
+        .filter(HealthRecord.user_id == user_id)
+        .order_by(Prediction.created_at.asc())
+        .all()
+    )
+    if start or end:
+        rows = [
+            (p, r)
+            for p, r in rows
+            if p.created_at
+            and (not start or p.created_at.date() >= start)
+            and (not end or p.created_at.date() <= end)
+        ]
+    return rows
+
+
+def _patient_factor_rows(rec: HealthRecord) -> list[dict]:
+    values = {
+        "Pregnancies": rec.pregnancies,
+        "Glucose": rec.glucose,
+        "BloodPressure": rec.blood_pressure,
+        "SkinThickness": rec.skin_thickness,
+        "Insulin": rec.insulin,
+        "BMI": rec.bmi,
+        "DiabetesPedigree": rec.diabetes_pedigree,
+        "Age": rec.age,
+    }
+    rows = []
+    for feat, raw in values.items():
+        val = raw if raw not in (None, 0) else None
+        rows.append({
+            "label": FACTOR_LABELS[feat],
+            "value": _fmt(val, FACTOR_UNITS[feat]),
+        })
+    return rows
+
+
+def _build_patient_report(report_type: str, user: User, db: Session, start: date | None, end: date | None) -> dict:
+    owner = user.full_name or user.email
+    base = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "owner": owner,
+        "role": user.role,
+    }
+
+    if report_type == "individual_risk":
+        latest = _latest_prediction_row(db, user.id)
+        if not latest:
+            raise HTTPException(status_code=404, detail="No predictions yet — run a risk assessment first")
+        pred, rec = latest
+        prob = pred.risk_probability or 0
+        return {
+            **base,
+            "title": REPORT_TITLES[report_type],
+            "sections": [
+                {"title": "Patient Information", "rows": [
+                    {"label": "Name", "value": owner},
+                    {"label": "Email", "value": user.email},
+                ]},
+                {"title": "Risk Assessment", "rows": [
+                    {"label": "Risk Level", "value": _risk_level(prob).title()},
+                    {"label": "Risk Probability", "value": f"{prob * 100:.1f}%"},
+                    {"label": "Classification", "value": "Diabetic" if pred.prediction == 1 else "Not Diabetic"},
+                    {"label": "Assessment Date", "value": pred.created_at.strftime("%Y-%m-%d %H:%M") if pred.created_at else "—"},
+                ]},
+                {"title": "Latest Health Factors", "rows": _patient_factor_rows(rec)},
+            ],
+        }
+
+    rows = _prediction_rows(db, user.id, start, end)
+    if not rows:
+        raise HTTPException(status_code=404, detail="No predictions in the selected period")
+    probs = [p.risk_probability or 0 for p, _ in rows]
+    avg = sum(probs) / len(probs)
+    delta = probs[-1] - probs[0]
+    trend = "increasing" if delta > 0.02 else "decreasing" if delta < -0.02 else "stable"
+    entries = [
+        {
+            "label": p.created_at.strftime("%Y-%m-%d") if p.created_at else "—",
+            "value": f"{(p.risk_probability or 0) * 100:.1f}% ({'Diabetic' if p.prediction == 1 else 'Not Diabetic'})",
+        }
+        for p, _ in rows[-12:]
+    ]
+    return {
+        **base,
+        "title": REPORT_TITLES[report_type],
+        "sections": [
+            {"title": "Monthly Summary", "rows": [
+                {"label": "Risk Checks", "value": str(len(rows))},
+                {"label": "Average Risk", "value": f"{avg * 100:.1f}%"},
+                {"label": "Risk Trend", "value": trend},
+            ]},
+            {"title": "Recent Predictions", "rows": entries},
+        ],
+    }
+
+
+def _provider_panel(db: Session) -> dict:
+    rows = (
+        db.query(User, HealthRecord, Prediction)
+        .join(HealthRecord, HealthRecord.user_id == User.id)
+        .join(Prediction, Prediction.health_record_id == HealthRecord.id)
+        .order_by(Prediction.created_at.desc())
+        .all()
+    )
+    patients = {}
+    for account, _rec, pred in rows:
+        if account.id in patients:
+            continue
+        patients[account.id] = {
+            "name": account.full_name or account.email,
+            "email": account.email,
+            "prob": pred.risk_probability or 0,
+            "level": _risk_level(pred.risk_probability or 0),
+            "last": pred.created_at.strftime("%Y-%m-%d") if pred.created_at else None,
+        }
+    return dict(
+        sorted(patients.items(), key=lambda kv: kv[1]["prob"], reverse=True)
+    )
+
+
+def _build_provider_report(report_type: str, user: User, db: Session) -> dict:
+    base = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "owner": user.full_name or user.email,
+        "role": user.role,
+        "title": REPORT_TITLES[report_type],
+    }
+    panel = _provider_panel(db)
+    total = len(panel)
+    high = sum(1 for p in panel.values() if p["level"] == "high")
+    moderate = sum(1 for p in panel.values() if p["level"] == "moderate")
+    low = sum(1 for p in panel.values() if p["level"] == "low")
+    avg = round(sum(p["prob"] for p in panel.values()) / total, 4) if total else 0
+
+    if report_type == "panel_overview":
+        return {
+            **base,
+            "sections": [
+                {"title": "Panel Summary", "rows": [
+                    {"label": "Patients in Panel", "value": str(total)},
+                    {"label": "High Risk", "value": str(high)},
+                    {"label": "Moderate Risk", "value": str(moderate)},
+                    {"label": "Low Risk", "value": str(low)},
+                    {"label": "Average Risk", "value": f"{avg * 100:.1f}%" if total else "—"},
+                ]},
+                {"title": "Top-Risk Patients", "rows": (
+                    [
+                        {"label": p["name"], "value": f"{(p['prob']) * 100:.1f}% · {p['level'].title()} · {p['last']}"}
+                        for p in list(panel.values())[:5]
+                    ] or [{"label": "—", "value": "No patients yet"}]
+                )},
+            ],
+        }
+
+    latest_by_user: dict[int, dict] = {}
+    rows = (
+        db.query(User, HealthRecord, Prediction)
+        .join(HealthRecord, HealthRecord.user_id == User.id)
+        .join(Prediction, Prediction.health_record_id == HealthRecord.id)
+        .order_by(Prediction.created_at.desc())
+        .all()
+    )
+    for account, rec, pred in rows:
+        if account.id not in latest_by_user:
+            latest_by_user[account.id] = {"rec": rec, "pred": pred}
+    records = [v["rec"] for v in latest_by_user.values()]
+
+    def mean(attr):
+        values = [getattr(r, attr) for r in records if getattr(r, attr) not in (None, 0)]
+        return round(sum(values) / len(values), 1) if values else None
+
+    bmi_30 = sum(1 for r in records if r.bmi is not None and r.bmi >= 30)
+    glucose_126 = sum(1 for r in records if r.glucose is not None and r.glucose >= 126)
+    return {
+        **base,
+        "sections": [
+            {"title": "Clinical Insights", "rows": [
+                {"label": "Patients with Predictions", "value": str(len(records))},
+                {"label": "Average Glucose", "value": _fmt(mean("glucose"), " mg/dL")},
+                {"label": "Average BMI", "value": _fmt(mean("bmi"))},
+                {"label": "Average Age", "value": _fmt(mean("age"), " yrs", digits=0)},
+                {"label": "Patients with BMI ≥ 30", "value": str(bmi_30)},
+                {"label": "Patients with Glucose ≥ 126", "value": str(glucose_126)},
+            ]},
+        ],
+    }
+
+
+def _role_counts(db: Session) -> dict:
+    return {role: db.query(User).filter(User.role == role).count() for role in VALID_ROLES}
+
+
+def _build_admin_report(report_type: str, user: User, db: Session) -> dict:
+    base = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "owner": user.full_name or user.email,
+        "role": user.role,
+        "title": REPORT_TITLES[report_type],
+    }
+
+    if report_type == "model_performance":
+        job = get_latest_completed()
+        if not job:
+            return {
+                **base,
+                "sections": [{"title": "Model Performance",
+                              "rows": [{"label": "Status", "value": "No completed training jobs yet"}]}],
+            }
+        rows = [
+            {"label": m.get("label", m.get("id", "?")),
+             "value": (
+                 f"accuracy {(m.get('accuracy') or 0) * 100:.1f}% · "
+                 f"precision {(m.get('precision') or 0) * 100:.1f}% · "
+                 f"recall {(m.get('recall') or 0) * 100:.1f}% · "
+                 f"F1 {m.get('f1') or 0:.3f} · n={m.get('n_test')}"
+             )}
+            for m in job.get("models", [])
+        ]
+        return {
+            **base,
+            "sections": [
+                {"title": "Job Overview", "rows": [
+                    {"label": "Job ID", "value": job.get("job_id", "—")},
+                    {"label": "Records Trained", "value": str(job.get("n_records") or "—")},
+                    {"label": "Best Model", "value": (job.get("best_model") or {}).get("label", "—")},
+                    {"label": "Deployed Model", "value": DEPLOYED_MODEL.get("label", "—")},
+                ]},
+                {"title": "Model Performance", "rows": rows},
+            ],
+        }
+
+    total_users = db.query(func.count(User.id)).scalar() or 0
+    total_predictions = db.query(func.count(Prediction.id)).scalar() or 0
+    today_start = datetime.combine(date.today(), time.min)
+    predictions_today = (
+        db.query(func.count(Prediction.id)).filter(Prediction.created_at >= today_start).scalar() or 0
+    )
+
+    if report_type == "system_usage":
+        counts = _role_counts(db)
+        return {
+            **base,
+            "sections": [{"title": "System Usage", "rows": [
+                {"label": "Total Users", "value": str(total_users)},
+                {"label": "Patients", "value": str(counts["patient"])},
+                {"label": "Providers", "value": str(counts["provider"])},
+                {"label": "Admins", "value": str(counts["admin"])},
+                {"label": "Predictions (All Time)", "value": str(total_predictions)},
+                {"label": "Predictions Today", "value": str(predictions_today)},
+            ]}],
+        }
+
+    if report_type == "user_analytics":
+        counts = _role_counts(db)
+        recent_users = db.query(User).order_by(User.created_at.desc()).limit(5).all()
+        return {
+            **base,
+            "sections": [
+                {"title": "User Analytics", "rows": [
+                    {"label": "Total Users", "value": str(total_users)},
+                    {"label": "Patients", "value": str(counts["patient"])},
+                    {"label": "Providers", "value": str(counts["provider"])},
+                    {"label": "Admins", "value": str(counts["admin"])},
+                ]},
+                {"title": "Recent Signups", "rows": [
+                    {"label": u.full_name or u.email, "value": f"{u.role} · {(u.created_at.strftime('%Y-%m-%d') if u.created_at else '—')}"}
+                    for u in recent_users
+                ]},
+            ],
+        }
+
+    counts = job_counts()
+    job = get_latest_completed()
+    model_rows = [
+        {"label": m.get("label", m.get("id", "?")), "value": m.get("status", "—")}
+        for m in (job or {}).get("models", [])
+    ]
+    return {
+        **base,
+        "sections": [
+            {"title": "Training Summary", "rows": [
+                {"label": "Total Jobs", "value": str(counts["total"])},
+                {"label": "Running", "value": str(counts["running"])},
+                {"label": "Completed", "value": str(counts["completed"])},
+                {"label": "Failed", "value": str(counts["failed"])},
+                {"label": "Latest Job", "value": (job or {}).get("job_id", "—")},
+                {"label": "Latest Status", "value": (job or {}).get("status", "—")},
+                {"label": "Records Trained", "value": str((job or {}).get("n_records") or "—")},
+            ]},
+        ] + ([{"title": "Models in Latest Job", "rows": model_rows}] if model_rows else []),
+    }
+
+
+def _build_report(report_type: str, user: User, db: Session, start: date | None, end: date | None) -> dict:
+    if user.role == "patient":
+        return _build_patient_report(report_type, user, db, start, end)
+    if user.role == "provider":
+        return _build_provider_report(report_type, user, db)
+    return _build_admin_report(report_type, user, db)
+
+
+def _build_recommendations(f: dict, probability: float) -> list[dict]:
+    recs: list[dict] = []
+    prob_text = f"{probability * 100:.0f}%"
+    glucose = f.get("Glucose")
+    bmi = f.get("BMI")
+    bp = f.get("BloodPressure")
+    age = f.get("Age")
+    pedigree = f.get("DiabetesPedigree")
+    level = _risk_level(probability)
+
+    if probability >= 0.66:
+        recs.append({
+            "category": "Exercise", "priority": 1,
+            "title": "Aerobic Exercise Program",
+            "description": "150 minutes of moderate-intensity aerobic activity per week. Brisk walking, cycling, or swimming all qualify. Break it into 30-min daily sessions for easier adherence.",
+            "impact": "↓ 18% risk",
+            "reason": f"Your predicted risk is high ({prob_text}); regular aerobic exercise is the most effective single intervention.",
+        })
+    if glucose is not None and glucose >= 126:
+        recs.append({
+            "category": "Monitoring", "priority": 1,
+            "title": "Schedule HbA1c Test",
+            "description": "An HbA1c test gives a 3-month picture of average blood sugar. If above 5.7%, you are in the pre-diabetic range and immediate intervention is warranted.",
+            "impact": "Diagnostic",
+            "reason": f"Your fasting glucose was {glucose:.0f} mg/dL, at or above the diabetes diagnostic threshold (126 mg/dL).",
+        })
+    if bmi is not None and bmi >= 25:
+        recs.append({
+            "category": "Weight", "priority": 2,
+            "title": "5–7% Body Weight Reduction",
+            "description": "Losing just 5–7% of body weight (about 4–5 kg for you) can reduce diabetes risk by up to 58% in high-risk individuals, according to the DPP study.",
+            "impact": "↓ 58% risk",
+            "reason": f"Your BMI is {bmi:.1f}, above the healthy range (18.5–24.9).",
+        })
+    if bp is not None and bp >= 130:
+        recs.append({
+            "category": "Monitoring", "priority": 2,
+            "title": "Blood Pressure Monitoring",
+            "description": "Elevated blood pressure often coexists with insulin resistance. Monitor regularly and keep readings below 130/80 mmHg.",
+            "impact": "↓ 14% risk",
+            "reason": f"Your blood pressure was {bp:.0f} mmHg, above the recommended 130/80 target.",
+        })
+    if glucose is not None and (glucose > 100 or probability >= 0.33):
+        recs.append({
+            "category": "Diet", "priority": 3,
+            "title": "Mediterranean Dietary Pattern",
+            "description": "High in vegetables, whole grains, olive oil, and lean protein. Limit processed carbohydrates and added sugars. Aim for a glycemic index below 55 for main meals.",
+            "impact": "↓ 22% risk",
+            "reason": f"Your glucose ({glucose:.0f} mg/dL) or overall risk ({prob_text}) indicates a benefit from a lower-glycemic diet.",
+        })
+    if (age is not None and age >= 45) or (pedigree is not None and pedigree >= 0.5):
+        recs.append({
+            "category": "Monitoring", "priority": 3,
+            "title": "Annual Diabetes Screening",
+            "description": "National guidelines recommend annual fasting glucose or HbA1c screening for adults over 45 or those with a family history of type 2 diabetes.",
+            "impact": "Early",
+            "reason": f"Recommended based on your age ({age}) and/or family history (pedigree function {pedigree}).",
+        })
+    if probability >= 0.33:
+        recs.append({
+            "category": "Stress", "priority": 4,
+            "title": "Stress Management",
+            "description": "Chronic stress elevates cortisol, which raises blood glucose. Mindfulness-based stress reduction (MBSR) programs have shown significant HbA1c improvements.",
+            "impact": "↓ 7% risk",
+            "reason": "Moderate or higher predicted risk responds well to stress-reduction alongside lifestyle change.",
+        })
+    recs.append({
+        "category": "Sleep", "priority": 5,
+        "title": "Optimize Sleep Quality",
+        "description": "Poor sleep is associated with insulin resistance. Target 7–9 hours per night. Establish a consistent bedtime and reduce blue-light exposure after 9 PM.",
+        "impact": "↓ 9% risk",
+        "reason": "Consistent 7–9 hours of sleep supports glucose regulation and lowers insulin resistance.",
+    })
+    if level in ("moderate", "high"):
+        recs.append({
+            "category": "Exercise", "priority": 2,
+            "title": "Daily Walking Routine",
+            "description": "A short 20-minute walk after each meal dampens post-meal glucose spikes. Aim for at least 7,000 steps per day.",
+            "impact": "↓ 12% risk",
+            "reason": f"Your current risk level is {level} ({prob_text}); post-meal walking is a low-effort, high-return habit.",
+        })
+    seen: set[tuple] = set()
+    deduped = []
+    for r in sorted(recs, key=lambda r: r["priority"]):
+        key = (r["category"], r["title"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    return deduped
+
+
+class GenerateReportRequest(BaseModel):
+    report_type: str
+    start_date: str | None = None
+    end_date: str | None = None
+
+
+@app.get("/recommendations")
+def get_recommendations(
+    user: User = Depends(require_role("patient", "provider", "admin")),
+    db: Session = Depends(get_db),
+):
+    latest = _latest_prediction_row(db, user.id)
+    if not latest:
+        return {
+            "level": None,
+            "probability": None,
+            "predictions": 0,
+            "latest_date": None,
+            "recommendations": [],
+        }
+
+    pred, rec = latest
+    features = {
+        "Pregnancies": rec.pregnancies if rec.pregnancies is not None else 0,
+        "Glucose": _field_value(rec.glucose, "Glucose"),
+        "BloodPressure": _field_value(rec.blood_pressure, "BloodPressure"),
+        "SkinThickness": _field_value(rec.skin_thickness, "SkinThickness"),
+        "Insulin": _field_value(rec.insulin, "Insulin"),
+        "BMI": _field_value(rec.bmi, "BMI"),
+        "DiabetesPedigree": rec.diabetes_pedigree if rec.diabetes_pedigree is not None else 0,
+        "Age": rec.age if rec.age is not None else 0,
+    }
+    total = (
+        db.query(func.count(Prediction.id))
+        .join(HealthRecord, Prediction.health_record_id == HealthRecord.id)
+        .filter(HealthRecord.user_id == user.id)
+        .scalar()
+        or 0
+    )
+    return {
+        "level": _risk_level(pred.risk_probability or 0),
+        "probability": pred.risk_probability,
+        "predictions": total,
+        "latest_date": pred.created_at.isoformat() if pred.created_at else None,
+        "recommendations": _build_recommendations(features, pred.risk_probability or 0),
+    }
+
+
+@app.get("/reports/recent")
+def reports_recent(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(GeneratedReport)
+        .filter(GeneratedReport.owner_id == user.id)
+        .order_by(GeneratedReport.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "report_type": r.report_type,
+            "title": r.title,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/reports/generate")
+def reports_generate(
+    payload: GenerateReportRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    allowed = REPORT_TYPES.get(user.role, [])
+    if payload.report_type not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Report type '{payload.report_type}' is not available for role '{user.role}'",
+        )
+    summary = _build_report(
+        payload.report_type,
+        user,
+        db,
+        _parse_report_date(payload.start_date),
+        _parse_report_date(payload.end_date),
+    )
+    report = GeneratedReport(
+        owner_id=user.id,
+        role=user.role,
+        report_type=payload.report_type,
+        title=summary["title"],
+        payload_json=json.dumps(summary),
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return {
+        "id": report.id,
+        "report_type": report.report_type,
+        "title": report.title,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+        "summary": summary,
+    }
+
+
+@app.get("/reports/{report_id}")
+def reports_detail(
+    report_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    report = _get_owned_report(report_id, user, db)
+    return {
+        "id": report.id,
+        "report_type": report.report_type,
+        "title": report.title,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+        "summary": json.loads(report.payload_json),
+    }
+
+
+@app.get("/reports/{report_id}/download")
+def reports_download(
+    report_id: int,
+    format: str = Query("csv"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    report = _get_owned_report(report_id, user, db)
+    summary = json.loads(report.payload_json)
+    if format == "json":
+        content = json.dumps(summary, indent=2)
+        media_type = "application/json"
+        ext = "json"
+    else:
+        content = _summary_to_csv(summary)
+        media_type = "text/csv"
+        ext = "csv"
+    filename = "".join(ch for ch in summary["title"] if ch.isalnum() or ch in " _-").strip().replace(" ", "_")
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}.{ext}"'},
+    )

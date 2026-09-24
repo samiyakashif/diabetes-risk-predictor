@@ -29,8 +29,8 @@ def migrate():
 
 
 migrate()
+Base.metadata.create_all(bind=engine)
 
 
 if __name__ == "__main__":
-    Base.metadata.create_all(bind=engine)
-    print("Tables created successfully!")
+    print("Tables ready!")

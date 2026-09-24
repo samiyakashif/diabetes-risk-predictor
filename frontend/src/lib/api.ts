@@ -20,6 +20,12 @@ import type {
   PatientDetail,
   ProviderOverview,
 } from "@/types/provider";
+import type { RecommendationResponse } from "@/types/recommendations";
+import type {
+  GenerateReportResponse,
+  GeneratedReportMeta,
+  ReportFormat,
+} from "@/types/reports";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -168,5 +174,58 @@ export const api = {
 
   getAdminOverview() {
     return request<AdminOverview>("/admin/overview", {}, true);
+  },
+
+  getRecommendations() {
+    return request<RecommendationResponse>("/recommendations", {}, true);
+  },
+
+  getRecentReports() {
+    return request<GeneratedReportMeta[]>("/reports/recent", {}, true);
+  },
+
+  generateReport(
+    reportType: string,
+    startDate?: string,
+    endDate?: string
+  ) {
+    return request<GenerateReportResponse>(
+      "/reports/generate",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          report_type: reportType,
+          start_date: startDate,
+          end_date: endDate,
+        }),
+      },
+      true
+    );
+  },
+
+  getReport(reportId: number) {
+    return request<GenerateReportResponse>(`/reports/${reportId}`, {}, true);
+  },
+
+  async downloadReport(reportId: number, format: ReportFormat = "csv") {
+    const token = getToken();
+    if (!token) throw new ApiError("Not authenticated", 401);
+    const response = await fetch(
+      `${API_BASE_URL}/reports/${reportId}/download?format=${format}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+    if (!response.ok) {
+      let message = `Request failed with status ${response.status}`;
+      try {
+        const body = await response.json();
+        message = body.detail ?? message;
+      } catch {
+        // fall back to generic message
+      }
+      throw new ApiError(message, response.status);
+    }
+    return response.blob();
   },
 };

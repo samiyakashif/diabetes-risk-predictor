@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 
@@ -49,3 +49,15 @@ class Prediction(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     health_record = relationship("HealthRecord", back_populates="prediction")
+
+
+class GeneratedReport(Base):
+    __tablename__ = "generated_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String, nullable=False)
+    report_type = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    payload_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
