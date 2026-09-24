@@ -28,6 +28,7 @@ export function AuthGuard({
   const misplaced = Boolean(role) && minRole === "patient" && ROLE_RANK[role as Role] > ROLE_RANK.patient;
 
   useEffect(() => {
+    if (loading) return;
     if (!isAuthenticated) {
       router.replace("/login");
       return;
@@ -41,7 +42,7 @@ export function AuthGuard({
         router.replace(ROLE_HOME[role]);
       }
     }
-  }, [isAuthenticated, role, minRole, router]);
+  }, [isAuthenticated, role, minRole, router, loading]);
 
   if (!isAuthenticated) {
     return (

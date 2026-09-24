@@ -7,13 +7,22 @@ import { Button } from "@/components/ui/Button";
 import { InputField } from "@/components/ui/InputField";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { cn } from "@/lib/utils";
 import { ROLE_HOME } from "@/types/user";
+import type { Role } from "@/types/user";
+
+const ROLE_OPTIONS: { value: Role; label: string }[] = [
+  { value: "patient", label: "Patient" },
+  { value: "provider", label: "Provider" },
+  { value: "admin", label: "Admin" },
+];
 
 export default function LoginPage() {
   const router = useRouter();
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [selectedRole, setSelectedRole] = useState<string>("patient");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -27,6 +36,15 @@ export default function LoginPage() {
       const user = await login(token.access_token);
       if (!user) {
         setError("Could not load your profile. Please try again.");
+        return;
+      }
+      if (user.role !== selectedRole) {
+        const label =
+          ROLE_OPTIONS.find((r) => r.value === user.role)?.label ?? user.role;
+        setSelectedRole(user.role);
+        setError(
+          `This account is registered as ${label}. Sign in as "${label}" was selected for you — tap Sign In again to continue.`
+        );
         return;
       }
       router.push(ROLE_HOME[user.role]);
@@ -74,6 +92,29 @@ export default function LoginPage() {
           required
           autoComplete="current-password"
         />
+
+        <div className="flex flex-col gap-1.5">
+          <label className="text-sm font-medium text-foreground">
+            Sign in as
+          </label>
+          <div className="grid grid-cols-3 gap-2">
+            {ROLE_OPTIONS.map((r) => (
+              <button
+                key={r.value}
+                type="button"
+                onClick={() => setSelectedRole(r.value)}
+                className={cn(
+                  "py-2 px-3 rounded-lg text-xs font-semibold border transition-all capitalize",
+                  selectedRole === r.value
+                    ? "bg-secondary text-primary border-[#A8D9E2]"
+                    : "bg-white text-muted-foreground border-border hover:border-[#A8D9E2]"
+                )}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div className="text-right">
           <button type="button" className="text-xs text-primary hover:underline">
