@@ -55,3 +55,16 @@ export interface HealthRecord {
   age: number;
   recorded_at?: string;
 }
+
+export interface DraftRecord {
+  id: number;
+  pregnancies: number;
+  glucose: number;
+  blood_pressure: number;
+  skin_thickness: number;
+  insulin: number;
+  bmi: number;
+  diabetes_pedigree: number;
+  age: number;
+  recorded_at?: string | null;
+}

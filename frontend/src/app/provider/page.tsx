@@ -35,12 +35,37 @@ function formatDate(iso: string | null): string {
   });
 }
 
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function ProviderDashboard() {
   const [overview, setOverview] = useState<ProviderOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
+
+  const exportOverview = async () => {
+    setExporting(true);
+    setError(null);
+    try {
+      const { text, filename } = await api.exportProviderOverview("csv");
+      triggerDownload(new Blob([text], { type: "text/csv" }), filename);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -272,9 +297,15 @@ export default function ProviderDashboard() {
                 }}
               />
             </div>
-            <Button variant="outline" size="sm" icon={Download}>
-              Export
-            </Button>
+            {exporting ? (
+              <Button variant="outline" size="sm" icon={Download} disabled>
+                Exporting...
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" icon={Download} onClick={exportOverview}>
+                Export
+              </Button>
+            )}
           </div>
         </div>
         <div className="overflow-x-auto">

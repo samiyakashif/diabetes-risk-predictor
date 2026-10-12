@@ -1,22 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronRight, Search } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronRight, Loader2, Search, X } from "lucide-react";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { cn } from "@/lib/utils";
-
-const CATEGORIES = ["All", "Nutrition", "Exercise", "Medication", "Monitoring", "Mental Health", "Research"];
-
-const ARTICLES = [
-  { cat: "Nutrition", title: "Understanding the Glycemic Index", preview: "How different foods affect your blood sugar levels and why the GI matters for diabetes prevention.", readTime: "6 min" },
-  { cat: "Exercise", title: "Exercise as Medicine: Glucose Control", preview: "Evidence-based exercise protocols that can lower HbA1c by up to 1.5% over 12 weeks.", readTime: "8 min" },
-  { cat: "Monitoring", title: "How to Read Your Fasting Glucose Results", preview: "A clear guide to interpreting your glucose numbers and knowing when to seek medical attention.", readTime: "4 min" },
-  { cat: "Medication", title: "Metformin: What to Expect", preview: "The most commonly prescribed diabetes drug — mechanism, side effects, and what clinical trials show.", readTime: "10 min" },
-  { cat: "Mental Health", title: "Diabetes Distress and How to Manage It", preview: "Living with diabetes risk affects mental health. Evidence-based strategies for managing diabetes-related anxiety.", readTime: "7 min" },
-  { cat: "Research", title: "The Diabetes Prevention Program Study", preview: "Key findings from the landmark DPP trial: lifestyle changes outperformed Metformin in preventing Type 2.", readTime: "12 min" },
-  { cat: "Nutrition", title: "Mediterranean Diet & Diabetes Risk", preview: "A meta-analysis of 15 trials shows Mediterranean eating reduces incident diabetes by 19–23%.", readTime: "9 min" },
-  { cat: "Exercise", title: "Resistance Training for Insulin Sensitivity", preview: "Strength training improves insulin sensitivity independently of aerobic exercise. Here's the protocol.", readTime: "7 min" },
-];
+import { api, ApiError } from "@/lib/api";
+import type { ResourceArticle, ResourceSummary } from "@/types/resources";
 
 const CAT_COLORS: Record<string, string> = {
   Nutrition: "#2A9E6B",
@@ -30,10 +19,62 @@ const CAT_COLORS: Record<string, string> = {
 export function ResourcesView() {
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState("All");
+  const [resources, setResources] = useState<ResourceSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ResourceArticle | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
-  const filtered = ARTICLES.filter(
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      setLoading(true);
+      try {
+        const data = await api.getResources();
+        if (!cancelled) {
+          setResources(data);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled)
+          setError(
+            err instanceof ApiError ? err.message : "Could not load resources"
+          );
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const categories = [
+    "All",
+    ...Array.from(new Set(resources.map((r) => r.category))),
+  ];
+
+  const openArticle = async (slug: string) => {
+    setDetailLoading(true);
+    setDetailError(null);
+    try {
+      const article = await api.getResource(slug);
+      setDetail(article);
+    } catch (err) {
+      setDetailError(
+        err instanceof ApiError ? err.message : "Could not load the article"
+      );
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const filtered = resources.filter(
     (a) =>
-      (activeCategory === "All" || a.cat === activeCategory) &&
+      (activeCategory === "All" || a.category === activeCategory) &&
       (a.title.toLowerCase().includes(search.toLowerCase()) ||
         a.preview.toLowerCase().includes(search.toLowerCase()))
   );
@@ -51,7 +92,7 @@ export function ResourcesView() {
               Categories
             </p>
             <div className="flex flex-col gap-1">
-              {CATEGORIES.map((c) => (
+              {categories.map((c) => (
                 <button
                   key={c}
                   onClick={() => setActiveCategory(c)}
@@ -79,25 +120,33 @@ export function ResourcesView() {
               className="w-full pl-10 pr-4 py-2.5 bg-white border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary"
             />
           </div>
-          {filtered.length === 0 ? (
+          {loading ? (
+            <div className="bg-white rounded-xl border border-border p-10 text-center text-sm text-muted-foreground">
+              Loading resources…
+            </div>
+          ) : error ? (
+            <div className="bg-white rounded-xl border border-border p-10 text-center text-sm text-destructive">
+              {error}
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="bg-white rounded-xl border border-border p-10 text-center text-sm text-muted-foreground">
               No articles match your search.
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4">
-              {filtered.map((a, i) => (
+              {filtered.map((a) => (
                 <div
-                  key={i}
+                  key={a.slug}
                   className="bg-white rounded-xl border border-border p-5 hover:border-[#A8D9E2] hover:shadow-sm transition-all group"
                 >
                   <div className="flex items-center justify-between mb-3">
                     <span
                       className="text-xs font-semibold px-2 py-0.5 rounded-full text-white"
-                      style={{ backgroundColor: CAT_COLORS[a.cat] || "#3A4E50" }}
+                      style={{ backgroundColor: CAT_COLORS[a.category] || "#3A4E50" }}
                     >
-                      {a.cat}
+                      {a.category}
                     </span>
-                    <span className="text-xs text-muted-foreground">{a.readTime} read</span>
+                    <span className="text-xs text-muted-foreground">{a.read_time} read</span>
                   </div>
                   <h4
                     className="font-semibold text-foreground mb-2 group-hover:text-primary transition-colors"
@@ -106,7 +155,10 @@ export function ResourcesView() {
                     {a.title}
                   </h4>
                   <p className="text-xs text-muted-foreground leading-relaxed mb-4">{a.preview}</p>
-                  <button className="text-xs font-semibold text-primary hover:underline flex items-center gap-1">
+                  <button
+                    onClick={() => openArticle(a.slug)}
+                    className="text-xs font-semibold text-primary hover:underline flex items-center gap-1"
+                  >
                     Read More <ChevronRight size={12} />
                   </button>
                 </div>
@@ -115,6 +167,59 @@ export function ResourcesView() {
           )}
         </div>
       </div>
+
+      {detail && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setDetail(null)}
+        >
+          <div
+            className="bg-white rounded-xl border border-border w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 shadow-lg fade-in-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span
+                    className="text-xs font-semibold px-2 py-0.5 rounded-full text-white"
+                    style={{ backgroundColor: CAT_COLORS[detail.category] || "#3A4E50" }}
+                  >
+                    {detail.category}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{detail.read_time} read</span>
+                </div>
+                <h3
+                  className="text-lg font-bold text-foreground"
+                  style={{ fontFamily: "var(--font-display)" }}
+                >
+                  {detail.title}
+                </h3>
+              </div>
+              <button
+                onClick={() => setDetail(null)}
+                className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            {detailLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
+                <Loader2 size={16} className="animate-spin" /> Loading article…
+              </div>
+            ) : detailError ? (
+              <p className="text-sm text-destructive py-4">{detailError}</p>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {detail.body.map((para, i) => (
+                  <p key={i} className="text-sm text-muted-foreground leading-relaxed">
+                    {para}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }

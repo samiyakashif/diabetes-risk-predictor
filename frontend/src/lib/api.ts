@@ -26,8 +26,17 @@ import type {
   GeneratedReportMeta,
   ReportFormat,
 } from "@/types/reports";
+import type {
+  NotificationSettings,
+  NotificationsResponse,
+  DatasetInfo,
+  UserProfile,
+} from "@/types/settings";
+import type { ResourceArticle, ResourceSummary } from "@/types/resources";
+import type { DraftRecord } from "@/types/health";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+export const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
 const TOKEN_KEY = "diabeta_token";
 
@@ -51,6 +60,39 @@ export class ApiError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+async function requestText(
+  path: string,
+  options: RequestInit = {},
+  authenticated = false
+): Promise<{ text: string; filename: string }> {
+  const headers = new Headers(options.headers);
+  if (authenticated) {
+    const token = getToken();
+    if (!token) throw new ApiError("Not authenticated", 401);
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers,
+  });
+  if (!response.ok) {
+    let message = `Request failed with status ${response.status}`;
+    try {
+      const body = await response.json();
+      message = body.detail ?? message;
+    } catch {
+      // fall back to generic message
+    }
+    throw new ApiError(message, response.status);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename="?([^";]+)"?/);
+  return {
+    text: await response.text(),
+    filename: match?.[1] ?? "export.csv",
+  };
 }
 
 async function request<T>(
@@ -103,6 +145,112 @@ export const api = {
 
   getMe() {
     return request<User>("/me", {}, true);
+  },
+
+  getProfile() {
+    return request<UserProfile>("/profile", {}, true);
+  },
+
+  updateProfile(payload: { full_name?: string; email?: string }) {
+    return request<UserProfile>(
+      "/profile",
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      },
+      true
+    );
+  },
+
+  uploadAvatar(avatar: string) {
+    return request<{ avatar_url: string }>(
+      "/profile/avatar",
+      {
+        method: "POST",
+        body: JSON.stringify({ avatar }),
+      },
+      true
+    );
+  },
+
+  getNotificationSettings() {
+    return request<NotificationsResponse>("/settings/notifications", {}, true);
+  },
+
+  updateNotificationSettings(settings: NotificationSettings) {
+    return request<NotificationsResponse>(
+      "/settings/notifications",
+      {
+        method: "PUT",
+        body: JSON.stringify({ settings }),
+      },
+      true
+    );
+  },
+
+  getDraft() {
+    return request<DraftRecord | null>("/health-records/draft", {}, true);
+  },
+
+  saveDraft(features: HealthFeatures) {
+    return request<{ id: number; message: string }>(
+      "/health-records/draft",
+      {
+        method: "POST",
+        body: JSON.stringify(features),
+      },
+      true
+    );
+  },
+
+  getDatasetInfo() {
+    return request<DatasetInfo>("/admin/dataset", {}, true);
+  },
+
+  uploadDataset(csv: string) {
+    return request<DatasetInfo & { message: string }>(
+      "/admin/dataset/upload",
+      {
+        method: "POST",
+        body: JSON.stringify({ csv }),
+      },
+      true
+    );
+  },
+
+  exportProviderOverview(format: "csv" | "json" = "csv") {
+    return requestText(
+      `/provider/overview/export?format=${format}`,
+      {},
+      true
+    );
+  },
+
+  exportPatient(patientId: number, format: "csv" | "json" = "csv") {
+    return requestText(
+      `/provider/patients/${patientId}/export?format=${format}`,
+      {},
+      true
+    );
+  },
+
+  submitFeedback(patientId: number, message: string) {
+    return request<{ id: number; message: string }>(
+      "/provider/feedback",
+      {
+        method: "POST",
+        body: JSON.stringify({ patient_id: patientId, message }),
+      },
+      true
+    );
+  },
+
+  getResources() {
+    return request<ResourceSummary[]>("/resources", {}, true);
+  },
+
+  getResource(slug: string) {
+    return request<ResourceArticle>(`/resources/${slug}`, {}, true);
   },
 
   predict(features: HealthFeatures) {

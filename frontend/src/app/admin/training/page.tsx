@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Brain, CheckCircle, Database, GitBranch, Layers, Play, TrendingUp, Upload, XCircle } from "lucide-react";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import { api, ApiError } from "@/lib/api";
+import type { DatasetInfo } from "@/types/settings";
 import type { MaybeTrainedModel, TrainingJob } from "@/types/training";
 
 const MODELS = [
@@ -24,6 +25,53 @@ export default function ModelTrainingPage() {
   const [error, setError] = useState("");
   const [job, setJob] = useState<TrainingJob | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [dataset, setDataset] = useState<DatasetInfo | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      try {
+        const info = await api.getDatasetInfo();
+        if (!cancelled) setDataset(info);
+      } catch {
+        // keep static fallback
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const content = typeof reader.result === "string" ? reader.result : "";
+      if (!content) return;
+      setImporting(true);
+      setImportStatus(null);
+      try {
+        const res = await api.uploadDataset(content);
+        setDataset(res);
+        setImportStatus({ ok: true, message: `Dataset imported (${res.rows ?? "?"} rows)` });
+      } catch (err) {
+        setImportStatus({
+          ok: false,
+          message: err instanceof ApiError ? err.message : "Import failed",
+        });
+      } finally {
+        setImporting(false);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
 
   const toggle = (id: string) => {
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -79,15 +127,45 @@ export default function ModelTrainingPage() {
         </div>
         <div className="flex-1 min-w-[200px]">
           <p className="text-sm font-semibold text-foreground">
-            Active Dataset: Pima Indians Diabetes Database
+            Active Dataset: {dataset ? dataset.filename : "Pima Indians Diabetes Database"}
           </p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            768 records · 8 features · cured of duplicates · Running on the attached FastAPI backend
-          </p>
+          {dataset ? (
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {dataset.rows ?? "…"} records · {dataset.columns?.length ?? "…"} features
+              {dataset.updated_at ? ` · updated ${new Date(dataset.updated_at).toLocaleString()}` : ""}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Loading dataset info from the attached FastAPI backend…
+            </p>
+          )}
+          {importStatus && (
+            <p
+              className={cn(
+                "text-xs font-medium mt-1",
+                importStatus.ok ? "text-[#2A9E6B]" : "text-destructive"
+              )}
+            >
+              {importStatus.message}
+            </p>
+          )}
         </div>
-        <Button variant="outline" size="sm" icon={Upload}>
-          Import New Dataset
+        <Button
+          variant="outline"
+          size="sm"
+          icon={Upload}
+          onClick={() => fileInputRef.current?.click()}
+          disabled={importing}
+        >
+          {importing ? "Importing..." : "Import New Dataset"}
         </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={onImportFile}
+        />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4 mb-4 md:mb-6">

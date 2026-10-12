@@ -26,4 +26,27 @@ class UserOut(BaseModel):
     email: EmailStr
     full_name: str | None
     role: str
+    avatar: str | None
     created_at: datetime
+
+
+class ProfileUpdate(BaseModel):
+    full_name: str | None = None
+    email: EmailStr | None = None
+
+
+class AvatarUpdate(BaseModel):
+    avatar: str
+
+
+class NotificationsUpdate(BaseModel):
+    settings: dict[str, bool]
+
+
+class FeedbackCreate(BaseModel):
+    patient_id: int
+    message: str
+
+
+class DatasetUpload(BaseModel):
+    csv: str

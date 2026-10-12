@@ -22,6 +22,7 @@ import {
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { RiskBadge } from "@/components/ui/RiskBadge";
 import { Button } from "@/components/ui/Button";
+import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type { PatientDetail, ProviderOverview } from "@/types/provider";
 import { RISK_CONFIG, riskLevelFromProbability, riskScoreFromProbability } from "@/types/prediction";
@@ -35,6 +36,17 @@ function formatDate(iso: string | null): string {
   });
 }
 
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function ClinicalInsights() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -46,6 +58,48 @@ function ClinicalInsights() {
   const [detail, setDetail] = useState<PatientDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackStatus, setFeedbackStatus] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const downloadReport = async () => {
+    if (selected == null) return;
+    setDownloading(true);
+    setError(null);
+    try {
+      const { text, filename } = await api.exportPatient(selected, "csv");
+      triggerDownload(new Blob([text], { type: "text/csv" }), filename);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Report download failed");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const submitFeedback = async () => {
+    if (selected == null) return;
+    if (!feedbackMessage.trim()) {
+      setFeedbackStatus({ ok: false, message: "Please enter a feedback message." });
+      return;
+    }
+    setFeedbackSubmitting(true);
+    setFeedbackStatus(null);
+    try {
+      await api.submitFeedback(selected, feedbackMessage.trim());
+      setFeedbackStatus({ ok: true, message: "Feedback submitted successfully" });
+      setFeedbackMessage("");
+      setFeedbackOpen(false);
+    } catch (err) {
+      setFeedbackStatus({
+        ok: false,
+        message: err instanceof Error ? err.message : "Could not submit feedback",
+      });
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -361,17 +415,92 @@ function ClinicalInsights() {
                 </ul>
               </div>
               <div className="flex gap-3 mt-2">
-                <Button variant="primary" icon={Download}>
-                  Download Report
+                <Button
+                  variant="primary"
+                  icon={Download}
+                  onClick={downloadReport}
+                  disabled={downloading || selected == null}
+                >
+                  {downloading ? "Downloading..." : "Download Report"}
                 </Button>
-                <Button variant="secondary" icon={ClipboardList}>
+                <Button
+                  variant="secondary"
+                  icon={ClipboardList}
+                  onClick={() => {
+                    setFeedbackStatus(null);
+                    setFeedbackOpen(true);
+                  }}
+                  disabled={selected == null}
+                >
                   Submit Feedback
                 </Button>
               </div>
+              {feedbackStatus && (
+                <p
+                  className={cn(
+                    "text-xs font-medium mt-3",
+                    feedbackStatus.ok ? "text-[#2A9E6B]" : "text-destructive"
+                  )}
+                >
+                  {feedbackStatus.message}
+                </p>
+              )}
             </div>
           </div>
         </div>
       </div>
+
+      {feedbackOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setFeedbackOpen(false)}
+        >
+          <div
+            className="bg-white rounded-xl border border-border w-full max-w-md p-6 shadow-lg fade-in-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3
+              className="text-base font-bold text-foreground mb-1"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              Submit Feedback
+            </h3>
+            <p className="text-xs text-muted-foreground mb-4">
+              Share notes about {detail?.name ?? "this patient"} for the care team.
+            </p>
+            <textarea
+              value={feedbackMessage}
+              onChange={(e) => setFeedbackMessage(e.target.value)}
+              rows={4}
+              placeholder="Enter your clinical feedback…"
+              className="w-full px-3.5 py-2.5 bg-background border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
+            />
+            {feedbackStatus && (
+              <p
+                className={cn(
+                  "text-xs font-medium mt-2",
+                  feedbackStatus.ok ? "text-[#2A9E6B]" : "text-destructive"
+                )}
+              >
+                {feedbackStatus.message}
+              </p>
+            )}
+            <div className="flex justify-end gap-2 mt-5">
+              <Button variant="outline" size="sm" onClick={() => setFeedbackOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={submitFeedback}
+                disabled={feedbackSubmitting}
+              >
+                {feedbackSubmitting ? "Submitting..." : "Submit"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

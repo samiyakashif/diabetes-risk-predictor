@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Activity, ChevronDown, Info } from "lucide-react";
+import { Activity, CheckCircle, ChevronDown, Info } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { InputField } from "@/components/ui/InputField";
 import { SectionHeader } from "@/components/ui/SectionHeader";
@@ -40,16 +40,48 @@ export default function HealthInputPage() {
   const [vals, setVals] = useState<FormValues>(INITIAL_VALUES);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draftSaved, setDraftSaved] = useState(false);
+  const [draftLoading, setDraftLoading] = useState(true);
 
   const set = (key: keyof FormValues) => (v: string) =>
     setVals((prev) => ({ ...prev, [key]: v }));
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      try {
+        const draft = await api.getDraft();
+        if (!cancelled && draft) {
+          setVals({
+            age: String(draft.age),
+            gender: "Female",
+            glucose: String(draft.glucose),
+            bp: String(draft.blood_pressure),
+            skin: String(draft.skin_thickness),
+            insulin: String(draft.insulin),
+            bmi: String(draft.bmi),
+            dpf: String(draft.diabetes_pedigree),
+            pregnancies: String(draft.pregnancies),
+          });
+        }
+      } catch {
+        // ignore draft load failures
+      } finally {
+        if (!cancelled) setDraftLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-    const features: HealthFeatures = {
+  const buildFeatures = (): HealthFeatures | null => {
+    const required = [vals.pregnancies, vals.glucose, vals.bp, vals.skin, vals.insulin, vals.bmi, vals.dpf, vals.age];
+    if (required.some((v) => v.trim() === "")) return null;
+    return {
       Pregnancies: Number(vals.pregnancies),
       Glucose: Number(vals.glucose),
       BloodPressure: Number(vals.bp),
@@ -59,6 +91,17 @@ export default function HealthInputPage() {
       DiabetesPedigree: Number(vals.dpf),
       Age: Number(vals.age),
     };
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const features = buildFeatures();
+    if (!features) {
+      setError("Please fill in all fields before running a prediction.");
+      return;
+    }
+    setLoading(true);
 
     try {
       const result = await api.predict(features);
@@ -74,6 +117,25 @@ export default function HealthInputPage() {
       );
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveDraft = async () => {
+    setError(null);
+    const features = buildFeatures();
+    if (!features) {
+      setError("Fill in all fields to save a draft.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.saveDraft(features);
+      setDraftSaved(true);
+      window.setTimeout(() => setDraftSaved(false), 2500);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save draft");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -227,12 +289,19 @@ export default function HealthInputPage() {
 
           <div className="mt-6 md:mt-8 pt-5 md:pt-6 border-t border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              Data is processed locally. Not stored without your consent.
+              {draftLoading
+                ? "Loading stored draft..."
+                : "Unfinished results can be saved as a draft and picked right back up."}
             </p>
             <div className="flex gap-3">
-              <Button variant="outline" type="button">
-                Save Draft
+              <Button variant="outline" type="button" onClick={saveDraft} disabled={saving}>
+                {saving ? "Saving..." : "Save Draft"}
               </Button>
+              {draftSaved && (
+                <span className="flex items-center gap-1.5 text-sm font-medium text-[#2A9E6B] fade-in-up">
+                  <CheckCircle size={14} /> Draft saved
+                </span>
+              )}
               <Button
                 variant="primary"
                 icon={Activity}

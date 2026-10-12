@@ -1,19 +1,32 @@
 from fastapi import FastAPI, Depends, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
+import base64
 import csv
 import io
 import joblib
 import numpy as np
 import json
+import os
 from datetime import date, datetime, time
 
 from database import SessionLocal
-from models import User, HealthRecord, Prediction, GeneratedReport
-from schemas import UserCreate, UserLogin, UserOut, Token
+from models import User, HealthRecord, Prediction, GeneratedReport, UserSetting, Feedback
+from schemas import (
+    UserCreate,
+    UserLogin,
+    UserOut,
+    Token,
+    ProfileUpdate,
+    AvatarUpdate,
+    NotificationsUpdate,
+    FeedbackCreate,
+    DatasetUpload,
+)
 from auth import (
     hash_password,
     verify_password,
@@ -32,6 +45,7 @@ from training import (
     start_training,
     valid_model_ids,
 )
+from resources_data import ARTICLES as RESOURCE_ARTICLES
 
 app = FastAPI()
 
@@ -45,6 +59,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BACKEND_DIR, "uploads", "avatars")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=os.path.join(BACKEND_DIR, "uploads")), name="uploads")
+
+DATASET_PATH = os.path.abspath(os.path.join(BACKEND_DIR, "..", "ml", "data", "Diabetes.csv"))
+DATASET_COLUMNS = ["preg", "plas", "pres", "skin", "test", "mass", "pedi", "age", "class"]
+
+DEFAULT_NOTIFS: dict[str, dict[str, bool]] = {
+    "patient": {
+        "riskAlerts": True,
+        "weeklyDigest": True,
+        "predictionReady": True,
+        "providerMessages": True,
+        "marketingEmails": False,
+    },
+    "provider": {
+        "predictionReady": True,
+        "newPatientAdded": True,
+        "marketingEmails": False,
+    },
+    "admin": {
+        "predictionReady": True,
+        "newPatientAdded": True,
+        "modelUpdates": True,
+        "systemAlerts": True,
+        "marketingEmails": False,
+    },
+}
 
 
 def get_db():
@@ -475,6 +519,141 @@ def provider_patient_detail(
     }
 
 
+def _provider_patient_list(db: Session) -> list[dict]:
+    rows = (
+        db.query(User, HealthRecord, Prediction)
+        .join(HealthRecord, HealthRecord.user_id == User.id)
+        .join(Prediction, Prediction.health_record_id == HealthRecord.id)
+        .order_by(Prediction.created_at.desc())
+        .all()
+    )
+    patients: dict[int, dict] = {}
+    for account, rec, pred in rows:
+        if account.id in patients:
+            continue
+        patients[account.id] = {
+            "Patient ID": account.id,
+            "Name": account.full_name or account.email,
+            "Email": account.email,
+            "Age": rec.age if rec.age is not None else "",
+            "Last Check": pred.created_at.strftime("%Y-%m-%d") if pred.created_at else "",
+            "Glucose": rec.glucose if rec.glucose is not None else "",
+            "BMI": rec.bmi if rec.bmi is not None else "",
+            "Risk Probability": pred.risk_probability or 0,
+            "Risk Level": _risk_level(pred.risk_probability or 0),
+        }
+    return list(patients.values())
+
+
+@app.get("/provider/overview/export")
+def provider_export(
+    format: str = Query("csv"),
+    user: User = Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
+    rows = _provider_patient_list(db)
+    if format == "json":
+        return Response(
+            content=json.dumps(rows, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="panel_overview.json"'},
+        )
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    headers = list(rows[0].keys()) if rows else ["Patient ID", "Name", "Email"]
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow([row.get(h, "") for h in headers])
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="panel_overview.csv"'},
+    )
+
+
+@app.get("/provider/patients/{patient_id}/export")
+def provider_patient_export(
+    patient_id: int,
+    format: str = Query("csv"),
+    user: User = Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
+    account = db.query(User).filter(User.id == patient_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    recs = (
+        db.query(HealthRecord, Prediction)
+        .join(Prediction, Prediction.health_record_id == HealthRecord.id)
+        .filter(HealthRecord.user_id == patient_id)
+        .order_by(Prediction.created_at.desc())
+        .all()
+    )
+    if not recs:
+        raise HTTPException(status_code=404, detail="No predictions yet for this patient")
+    rec, pred = recs[0]
+    meta = {
+        "Patient ID": account.id,
+        "Name": account.full_name or account.email,
+        "Email": account.email,
+        "Age": rec.age if rec.age is not None else "",
+        "Last Check": pred.created_at.strftime("%Y-%m-%d") if pred.created_at else "",
+        "Risk Probability": pred.risk_probability or 0,
+        "Risk Level": _risk_level(pred.risk_probability or 0),
+    }
+    history = [
+        {
+            "Date": p.created_at.strftime("%Y-%m-%d") if p.created_at else "",
+            "Glucose": r.glucose if r.glucose is not None else "",
+            "BMI": r.bmi if r.bmi is not None else "",
+            "Risk Probability": p.risk_probability or 0,
+            "Risk Level": _risk_level(p.risk_probability or 0),
+        }
+        for r, p in recs
+    ]
+    if format == "json":
+        return Response(
+            content=json.dumps({"patient": meta, "history": history}, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="patient_{patient_id}.json"'},
+        )
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(list(meta.keys()))
+    writer.writerow([meta.get(h, "") for h in meta.keys()])
+    writer.writerow([])
+    writer.writerow(["History"])
+    writer.writerow(list(history[0].keys()) if history else ["Date"])
+    for row in history:
+        writer.writerow([row.get(h, "") for h in (list(history[0].keys()) if history else ["Date"])])
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="patient_{patient_id}.csv"'},
+    )
+
+
+@app.post("/provider/feedback")
+def submit_feedback(
+    payload: FeedbackCreate,
+    user: User = Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
+    patient = db.query(User).filter(User.id == payload.patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    if not payload.message.strip():
+        raise HTTPException(status_code=400, detail="Feedback message cannot be empty")
+    row = Feedback(
+        author_id=user.id,
+        patient_id=payload.patient_id,
+        message=payload.message.strip(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "message": "Feedback submitted successfully"}
+
+
 @app.get("/admin/overview")
 def admin_overview(
     user: User = Depends(require_role("admin")),
@@ -490,6 +669,93 @@ def admin_overview(
         "deployed_model": DEPLOYED_MODEL,
         "latest_job_id": latest_completed_job_id(),
     }
+
+
+def _dataset_meta() -> dict:
+    if not os.path.exists(DATASET_PATH):
+        return {"exists": False, "filename": os.path.basename(DATASET_PATH)}
+    columns: list[str] = []
+    rows = 0
+    with open(DATASET_PATH, newline="") as f:
+        reader = csv.reader(f)
+        first = True
+        for line in reader:
+            if first:
+                columns = [c.strip().lower() for c in line]
+                first = False
+                continue
+            if any(v.strip() for v in line):
+                rows += 1
+    mtime = datetime.fromtimestamp(os.path.getmtime(DATASET_PATH)).isoformat()
+    return {
+        "exists": True,
+        "filename": os.path.basename(DATASET_PATH),
+        "columns": columns,
+        "rows": rows,
+        "updated_at": mtime,
+    }
+
+
+@app.get("/admin/dataset")
+def admin_dataset_info(
+    user: User = Depends(require_role("admin")),
+):
+    return _dataset_meta()
+
+
+@app.post("/admin/dataset/upload")
+def admin_dataset_upload(
+    payload: DatasetUpload,
+    user: User = Depends(require_role("admin")),
+):
+    content = payload.csv.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="CSV content is empty")
+    try:
+        reader = csv.reader(io.StringIO(content))
+        header = [c.strip().lower() for c in next(reader)]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not parse CSV content")
+    missing = [c for c in DATASET_COLUMNS if c not in header]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"CSV is missing required columns: {', '.join(missing)}",
+        )
+    data_rows = [line for line in csv.reader(io.StringIO(content)) if any(v.strip() for v in line)][1:]
+    if len(data_rows) < 2:
+        raise HTTPException(status_code=422, detail="CSV must contain at least 2 data rows")
+    with open(DATASET_PATH, "w", newline="") as f:
+        f.write(content if content.endswith("\n") else content + "\n")
+    meta = _dataset_meta()
+    return {"message": "Dataset imported successfully", **meta}
+
+
+@app.get("/resources")
+def list_resources(
+    user: User = Depends(get_current_user),
+):
+    return [
+        {
+            "slug": a["slug"],
+            "category": a["category"],
+            "title": a["title"],
+            "preview": a["preview"],
+            "read_time": a["read_time"],
+        }
+        for a in RESOURCE_ARTICLES
+    ]
+
+
+@app.get("/resources/{slug}")
+def resource_detail(
+    slug: str,
+    user: User = Depends(get_current_user),
+):
+    for a in RESOURCE_ARTICLES:
+        if a["slug"] == slug:
+            return a
+    raise HTTPException(status_code=404, detail="Resource not found")
 
 
 @app.post("/login", response_model=Token)
@@ -520,6 +786,151 @@ def change_password(
     db.commit()
 
     return {"message": "Password updated successfully"}
+
+
+def _profile(user: User) -> dict:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "avatar": user.avatar,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+@app.get("/profile")
+def get_profile(user: User = Depends(get_current_user)):
+    return _profile(user)
+
+
+@app.put("/profile")
+def update_profile(
+    payload: ProfileUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if payload.email and payload.email != user.email:
+        existing = db.query(User).filter(User.email == payload.email).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+    if payload.full_name:
+        user.full_name = payload.full_name.strip()
+    if payload.email:
+        user.email = payload.email
+    db.commit()
+    db.refresh(user)
+    return _profile(user)
+
+
+@app.post("/profile/avatar")
+def upload_avatar(
+    payload: AvatarUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    data = payload.avatar
+    if "," in data:
+        header, b64 = data.split(",", 1)
+        if "base64" not in header:
+            raise HTTPException(status_code=400, detail="Expected a base64 data URI")
+    else:
+        b64 = data
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image data")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty image data")
+    filename = f"avatar_{user.id}.png"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(raw)
+    user.avatar = f"/uploads/avatars/{filename}"
+    db.commit()
+    db.refresh(user)
+    return {"avatar_url": user.avatar}
+
+
+@app.get("/settings/notifications")
+def get_notifications(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    defaults = DEFAULT_NOTIFS.get(user.role, DEFAULT_NOTIFS["patient"])
+    if not row:
+        return {"settings": defaults}
+    saved = json.loads(row.notifications_json)
+    return {"settings": {**defaults, **saved}}
+
+
+@app.put("/settings/notifications")
+def update_notifications(
+    payload: NotificationsUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.query(UserSetting).filter(UserSetting.user_id == user.id).first()
+    raw = json.dumps(payload.settings)
+    if row:
+        row.notifications_json = raw
+    else:
+        db.add(UserSetting(user_id=user.id, notifications_json=raw))
+    db.commit()
+    return {"settings": payload.settings}
+
+
+@app.get("/health-records/draft")
+def get_latest_draft(
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(HealthRecord)
+        .outerjoin(Prediction, Prediction.health_record_id == HealthRecord.id)
+        .filter(HealthRecord.user_id == user_id, Prediction.id.is_(None))
+        .order_by(HealthRecord.recorded_at.desc())
+        .first()
+    )
+    if not row:
+        return None
+    return {
+        "id": row.id,
+        "pregnancies": row.pregnancies,
+        "glucose": row.glucose,
+        "blood_pressure": row.blood_pressure,
+        "skin_thickness": row.skin_thickness,
+        "insulin": row.insulin,
+        "bmi": row.bmi,
+        "diabetes_pedigree": row.diabetes_pedigree,
+        "age": row.age,
+        "recorded_at": row.recorded_at.isoformat() if row.recorded_at else None,
+    }
+
+
+@app.post("/health-records/draft")
+def save_draft(
+    patient: PatientData,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+):
+    data = patient.dict()
+    row = HealthRecord(
+        user_id=user_id,
+        pregnancies=data["Pregnancies"],
+        glucose=data["Glucose"],
+        blood_pressure=data["BloodPressure"],
+        skin_thickness=data["SkinThickness"],
+        insulin=data["Insulin"],
+        bmi=data["BMI"],
+        diabetes_pedigree=data["DiabetesPedigree"],
+        age=data["Age"],
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "message": "Draft saved"}
 
 
 REPORT_TYPES = {

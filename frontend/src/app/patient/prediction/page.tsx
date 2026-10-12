@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import {
   Activity,
@@ -15,6 +16,7 @@ import { RiskGauge } from "@/components/ui/RiskGauge";
 import { SectionHeader } from "@/components/ui/SectionHeader";
 import { RiskFactorsChart } from "@/components/dashboard/RiskFactorsChart";
 import { usePrediction } from "@/components/prediction/PredictionProvider";
+import { api, ApiError } from "@/lib/api";
 import {
   RISK_CONFIG,
   riskLevelFromProbability,
@@ -47,6 +49,29 @@ const RECOMMENDATIONS = [
 
 export default function PredictionPage() {
   const { prediction } = usePrediction();
+  const [downloading, setDownloading] = useState(false);
+
+  const downloadReport = async () => {
+    setDownloading(true);
+    try {
+      const report = await api.generateReport("individual_risk");
+      const blob = await api.downloadReport(report.id, "csv");
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `individual_risk_report_${report.id}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      window.alert(
+        err instanceof ApiError ? err.message : "Could not generate the report"
+      );
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   if (!prediction) {
     return (
@@ -184,8 +209,13 @@ export default function PredictionPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2 md:gap-3">
-        <Button variant="primary" icon={Download} onClick={() => window.print()}>
-          Download Report
+        <Button
+          variant="primary"
+          icon={Download}
+          onClick={downloadReport}
+          disabled={downloading}
+        >
+          {downloading ? "Preparing..." : "Download Report"}
         </Button>
         <Link href="/patient/health-input">
           <Button variant="secondary" icon={RefreshCw}>

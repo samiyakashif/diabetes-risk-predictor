@@ -1,12 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, CheckCircle, Settings, Shield } from "lucide-react";
+import { Bell, Camera, CheckCircle, Settings, Shield } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
-import { api, ApiError, clearToken } from "@/lib/api";
+import { api, ApiError, API_BASE_URL, clearToken } from "@/lib/api";
 import type { Role } from "@/types/user";
+import type {
+  NotificationSettings,
+  UserProfile,
+} from "@/types/settings";
 
 const PROFILE_DEFAULTS: Record<string, { name: string; email: string }> = {
   patient: { name: "Alex Johnson", email: "alex.johnson@email.com" },
@@ -26,20 +30,15 @@ export function SettingsView({ role }: { role: Role }) {
   const roleLabel = ROLE_LABEL[key];
   const router = useRouter();
 
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [profileName, setProfileName] = useState(defaults.name);
   const [profileEmail, setProfileEmail] = useState(defaults.email);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+  const [avatarUpdating, setAvatarUpdating] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [currentPw, setCurrentPw] = useState("");
-  const [newPw, setNewPw] = useState("");
-  const [confirmPw, setConfirmPw] = useState("");
-  const [pwError, setPwError] = useState("");
-  const [pwSaving, setPwSaving] = useState(false);
-  const [pwSaved, setPwSaved] = useState(false);
-  const [showCurrent, setShowCurrent] = useState(false);
-  const [showNew, setShowNew] = useState(false);
-
-  const [notifs, setNotifs] = useState({
+  const [notifs, setNotifs] = useState<NotificationSettings>({
     riskAlerts: true,
     weeklyDigest: true,
     predictionReady: true,
@@ -49,11 +48,120 @@ export function SettingsView({ role }: { role: Role }) {
     systemAlerts: role === "admin",
     marketingEmails: false,
   });
+  const [notifsLoaded, setNotifsLoaded] = useState(false);
+  const [notifsSaving, setNotifsSaving] = useState(false);
+  const [notifsSaved, setNotifsSaved] = useState(false);
 
-  const saveProfile = () => {
-    setProfileSaved(true);
-    window.setTimeout(() => setProfileSaved(false), 2500);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      try {
+        const data = await api.getProfile();
+        if (!cancelled) {
+          setProfile(data);
+          setProfileName(data.full_name ?? defaults.name);
+          setProfileEmail(data.email);
+        }
+      } catch (err) {
+        if (!cancelled && err instanceof ApiError && err.status === 401) {
+          clearToken();
+          router.replace("/login");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [defaults.name, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      try {
+        const data = await api.getNotificationSettings();
+        if (!cancelled) setNotifs(data.settings);
+      } catch {
+        // keep defaults on failure
+      } finally {
+        if (!cancelled) setNotifsLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const saveProfile = async () => {
+    setProfileSaving(true);
+    setProfileSaved(false);
+    try {
+      const data = await api.updateProfile({
+        full_name: profileName,
+        email: profileEmail,
+      });
+      setProfile(data);
+      setProfileSaved(true);
+      window.setTimeout(() => setProfileSaved(false), 2500);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        clearToken();
+        router.replace("/login");
+        return;
+      }
+      window.alert(err instanceof ApiError ? err.message : "Could not save profile");
+    } finally {
+      setProfileSaving(false);
+    }
   };
+
+  const onAvatarFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUri = typeof reader.result === "string" ? reader.result : "";
+      if (!dataUri) return;
+      setAvatarUpdating(true);
+      try {
+        const res = await api.uploadAvatar(dataUri);
+        setProfile((p) => (p ? { ...p, avatar: res.avatar_url } : p));
+      } catch (err) {
+        window.alert(err instanceof ApiError ? err.message : "Avatar upload failed");
+      } finally {
+        setAvatarUpdating(false);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const saveNotifs = async () => {
+    setNotifsSaving(true);
+    setNotifsSaved(false);
+    try {
+      const data = await api.updateNotificationSettings(notifs);
+      setNotifs(data.settings);
+      setNotifsSaved(true);
+      window.setTimeout(() => setNotifsSaved(false), 2500);
+    } catch (err) {
+      window.alert(err instanceof ApiError ? err.message : "Could not save preferences");
+    } finally {
+      setNotifsSaving(false);
+    }
+  };
+
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [pwError, setPwError] = useState("");
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwSaved, setPwSaved] = useState(false);
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
 
   const savePassword = async () => {
     setPwError("");
@@ -199,17 +307,40 @@ export function SettingsView({ role }: { role: Role }) {
           <div className="px-6 py-6">
             <div className="flex items-center gap-4 mb-6">
               <div
-                className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold text-white flex-shrink-0"
-                style={{ background: "linear-gradient(135deg, #0D7A8A, #0A5F6C)" }}
+                className="w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold text-white flex-shrink-0 overflow-hidden"
+                style={{
+                  background: "linear-gradient(135deg, #0D7A8A, #0A5F6C)",
+                }}
               >
-                {profileName.charAt(0)}
+                {profile?.avatar ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`${API_BASE_URL}${profile.avatar}`}
+                    alt="Avatar"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  profileName.charAt(0)
+                )}
               </div>
               <div>
                 <p className="text-sm font-semibold text-foreground">{profileName}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">{roleLabel}</p>
-                <button className="text-xs text-primary font-medium hover:underline mt-1">
-                  Change avatar
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="text-xs text-primary font-medium hover:underline mt-1 inline-flex items-center gap-1"
+                >
+                  <Camera size={12} />
+                  {avatarUpdating ? "Uploading..." : "Change avatar"}
                 </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={onAvatarFile}
+                />
               </div>
             </div>
 
@@ -234,8 +365,8 @@ export function SettingsView({ role }: { role: Role }) {
             </div>
 
             <div className="flex items-center gap-3">
-              <Button variant="primary" onClick={saveProfile}>
-                Save Profile
+              <Button variant="primary" onClick={saveProfile} disabled={profileSaving}>
+                {profileSaving ? "Saving..." : "Save Profile"}
               </Button>
               {profileSaved && (
                 <span className="flex items-center gap-1.5 text-sm font-medium text-[#2A9E6B] fade-in-up">
@@ -422,12 +553,27 @@ export function SettingsView({ role }: { role: Role }) {
               </div>
             ))}
           </div>
-          <div className="px-6 py-4 border-t border-border bg-background">
+          <div className="px-6 py-4 border-t border-border bg-background flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
               Email notifications are sent to{" "}
               <strong className="text-foreground">{profileEmail}</strong>. Update your email
               above to change the destination.
             </p>
+            <div className="flex items-center gap-3">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={saveNotifs}
+                disabled={notifsSaving || !notifsLoaded}
+              >
+                {notifsSaving ? "Saving..." : "Save Preferences"}
+              </Button>
+              {notifsSaved && (
+                <span className="flex items-center gap-1.5 text-sm font-medium text-[#2A9E6B] fade-in-up">
+                  <CheckCircle size={14} /> Saved
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>

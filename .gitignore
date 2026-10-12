@@ -17,5 +17,12 @@ ml/models/trained/
 node_modules/
 .next/
 
+# Runtime uploads
+backend/uploads/
+
+# Next.js agent-generated docs
+frontend/AGENTS.md
+frontend/CLAUDE.md
+
 # OS
 .DS_Store

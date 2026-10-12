@@ -12,9 +12,12 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     full_name = Column(String)
     role = Column(String, default="patient", nullable=False)
+    avatar = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     health_records = relationship("HealthRecord", back_populates="user")
+    settings = relationship("UserSetting", back_populates="user", uselist=False)
+    feedback = relationship("Feedback", back_populates="author", foreign_keys="Feedback.author_id")
 
 
 class HealthRecord(Base):
@@ -61,3 +64,27 @@ class GeneratedReport(Base):
     title = Column(String, nullable=False)
     payload_json = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserSetting(Base):
+    __tablename__ = "user_settings"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True, index=True)
+    notifications_json = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="settings")
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+
+    id = Column(Integer, primary_key=True, index=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    author = relationship(
+        "User", back_populates="feedback", foreign_keys=[author_id]
+    )

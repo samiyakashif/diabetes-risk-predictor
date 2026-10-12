@@ -26,6 +26,13 @@ def migrate():
             )
             conn.commit()
             print("Migrated: added 'role' column to users table")
+    if "avatar" not in columns:
+        with engine.connect() as conn:
+            conn.execute(
+                text("ALTER TABLE users ADD COLUMN avatar TEXT")
+            )
+            conn.commit()
+            print("Migrated: added 'avatar' column to users table")
 
 
 migrate()
