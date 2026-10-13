@@ -19,7 +19,7 @@ const ROLE_OPTIONS: { value: Role; label: string }[] = [
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, logout } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [selectedRole, setSelectedRole] = useState<string>("patient");
@@ -34,23 +34,17 @@ export default function LoginPage() {
     try {
       const token = await api.login({ email, password });
       const user = await login(token.access_token);
-      if (!user) {
-        setError("Could not load your profile. Please try again.");
-        return;
-      }
-      if (user.role !== selectedRole) {
-        const label =
-          ROLE_OPTIONS.find((r) => r.value === user.role)?.label ?? user.role;
-        setSelectedRole(user.role);
-        setError(
-          `This account is registered as ${label}. Sign in as "${label}" was selected for you — tap Sign In again to continue.`
-        );
+      if (!user || user.role !== selectedRole) {
+        logout();
+        setError("Unknown username or password");
         return;
       }
       router.push(ROLE_HOME[user.role]);
     } catch (err) {
       setError(
-        err instanceof ApiError ? err.message : "Could not connect to server"
+        err instanceof ApiError
+          ? "Unknown username or password"
+          : "Could not connect to server"
       );
     } finally {
       setLoading(false);
