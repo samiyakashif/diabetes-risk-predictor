@@ -109,16 +109,19 @@ def start_training(model_ids: list[str]) -> dict:
 
 
 def get_job(job_id: str) -> dict | None:
-    return JOBS.get(job_id)
+    """Look up a job in memory, falling back to persisted results on disk.
+
+    In-progress jobs only live in memory, but completed jobs keep a
+    ``results.json`` in their artifact directory, so evaluation and deploy
+    keep working for older jobs (and across server restarts).
+    """
+    job = JOBS.get(job_id)
+    if job is not None:
+        return job
+    return _completed_job_from_disk(job_id)
 
 
-def get_latest_completed() -> dict | None:
-    completed = [j for j in JOBS.values() if j.get("status") == "complete"]
-    if completed:
-        return max(completed, key=lambda j: j.get("finished_at") or "")
-    job_id = latest_completed_job_dir()
-    if not job_id:
-        return None
+def _completed_job_from_disk(job_id: str) -> dict | None:
     tm = _import_trainer()
     try:
         with open(os.path.join(tm.ARTIFACT_DIR, job_id, "results.json")) as f:
@@ -130,14 +133,24 @@ def get_latest_completed() -> dict | None:
         "status": "complete",
         "progress": 100,
         "current_step": "Training complete",
-        "started_at": None,
-        "finished_at": None,
+        "started_at": payload.get("started_at"),
+        "finished_at": payload.get("finished_at"),
         "models": payload.get("models", []),
         "results": payload.get("results", {}),
         "best_model": payload.get("best_model"),
         "n_records": payload.get("n_records"),
         "error": None,
     }
+
+
+def get_latest_completed() -> dict | None:
+    completed = [j for j in JOBS.values() if j.get("status") == "complete"]
+    if completed:
+        return max(completed, key=lambda j: j.get("finished_at") or "")
+    job_id = latest_completed_job_dir()
+    if not job_id:
+        return None
+    return _completed_job_from_disk(job_id)
 
 
 def latest_completed_job_dir() -> str | None:
