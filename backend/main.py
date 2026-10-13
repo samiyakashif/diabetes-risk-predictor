@@ -26,11 +26,15 @@ from schemas import (
     NotificationsUpdate,
     FeedbackCreate,
     DatasetUpload,
+    ForgotPassword,
+    ResetPassword,
 )
 from auth import (
     hash_password,
     verify_password,
     create_access_token,
+    create_reset_token,
+    verify_reset_token,
     get_current_user_id,
     security,
 )
@@ -457,35 +461,8 @@ def provider_patient_detail(
 
     rec, pred = recs[-1]
 
-    def _field(value, key):
-        return value if value not in (None, 0) else medians.get(key, value)
-
-    raw_row = [
-        rec.pregnancies if rec.pregnancies is not None else 0,
-        _field(rec.glucose, "Glucose"),
-        _field(rec.blood_pressure, "BloodPressure"),
-        _field(rec.skin_thickness, "SkinThickness"),
-        _field(rec.insulin, "Insulin"),
-        _field(rec.bmi, "BMI"),
-        rec.diabetes_pedigree if rec.diabetes_pedigree is not None else 0,
-        rec.age if rec.age is not None else 0,
-    ]
-
-    features = {
-        "Pregnancies": raw_row[0],
-        "Glucose": raw_row[1],
-        "BloodPressure": raw_row[2],
-        "SkinThickness": raw_row[3],
-        "Insulin": raw_row[4],
-        "BMI": raw_row[5],
-        "DiabetesPedigree": raw_row[6],
-        "Age": raw_row[7],
-    }
-    factors = []
-    for feat, value in features.items():
-        impact = max(5, min(100, round(float(value) / FACTOR_CAPS[feat] * 100)))
-        fill = "#C0453A" if impact >= 60 else "#C8821A" if impact >= 30 else "#2A9E6B"
-        factors.append({"name": FACTOR_LABELS[feat], "impact": impact, "fill": fill, "value": float(value)})
+    features, raw_row = _features_from_record(rec)
+    factors = _compute_factors(features)
 
     latest_job_id = latest_completed_job_id()
     model_scores = job_model_scores(latest_job_id, raw_row) if latest_job_id else None
@@ -788,6 +765,37 @@ def change_password(
     return {"message": "Password updated successfully"}
 
 
+@app.post("/forgot-password")
+def forgot_password(payload: ForgotPassword, db: Session = Depends(get_db)):
+    message = "If that email is registered, a password reset link has been sent."
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user:
+        return {"message": message, "reset_token": None}
+    # No email service is configured in this deployment, so the reset token is
+    # returned directly. In production this would be emailed, never returned.
+    token = create_reset_token(user.id)
+    return {"message": message, "reset_token": token}
+
+
+@app.post("/reset-password")
+def reset_password(payload: ResetPassword, db: Session = Depends(get_db)):
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+
+    user_id = verify_reset_token(payload.token)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+
+    return {"message": "Password reset successfully"}
+
+
 def _profile(user: User) -> dict:
     return {
         "id": user.id,
@@ -974,6 +982,40 @@ def _fmt(value, suffix="", digits=1):
 
 def _field_value(value, key):
     return value if value not in (None, 0) else medians.get(key, None)
+
+
+def _features_from_record(rec: HealthRecord) -> tuple[dict, list]:
+    raw_row = [
+        rec.pregnancies if rec.pregnancies is not None else 0,
+        _field_value(rec.glucose, "Glucose"),
+        _field_value(rec.blood_pressure, "BloodPressure"),
+        _field_value(rec.skin_thickness, "SkinThickness"),
+        _field_value(rec.insulin, "Insulin"),
+        _field_value(rec.bmi, "BMI"),
+        rec.diabetes_pedigree if rec.diabetes_pedigree is not None else 0,
+        rec.age if rec.age is not None else 0,
+    ]
+    features = {
+        "Pregnancies": raw_row[0],
+        "Glucose": raw_row[1],
+        "BloodPressure": raw_row[2],
+        "SkinThickness": raw_row[3],
+        "Insulin": raw_row[4],
+        "BMI": raw_row[5],
+        "DiabetesPedigree": raw_row[6],
+        "Age": raw_row[7],
+    }
+    return features, raw_row
+
+
+def _compute_factors(features: dict) -> list[dict]:
+    factors = []
+    for feat, value in features.items():
+        numeric = float(value) if value not in (None, 0) else float(medians.get(feat, 0) or 0)
+        impact = max(5, min(100, round(numeric / FACTOR_CAPS[feat] * 100)))
+        fill = "#C0453A" if impact >= 60 else "#C8821A" if impact >= 30 else "#2A9E6B"
+        factors.append({"name": FACTOR_LABELS[feat], "impact": impact, "fill": fill, "value": float(numeric)})
+    return factors
 
 
 def _parse_report_date(value: str | None) -> date | None:
@@ -1420,6 +1462,35 @@ class GenerateReportRequest(BaseModel):
     report_type: str
     start_date: str | None = None
     end_date: str | None = None
+
+
+@app.get("/risk-factors")
+def get_risk_factors(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    latest = _latest_prediction_row(db, user.id)
+    if not latest:
+        return {
+            "has_prediction": False,
+            "prediction": None,
+            "risk_label": None,
+            "risk_probability": None,
+            "factors": [],
+            "model_scores": None,
+        }
+
+    pred, rec = latest
+    features, raw_row = _features_from_record(rec)
+    latest_job_id = latest_completed_job_id()
+    return {
+        "has_prediction": True,
+        "prediction": pred.prediction,
+        "risk_label": "Diabetic" if pred.prediction == 1 else "Not Diabetic",
+        "risk_probability": pred.risk_probability,
+        "factors": _compute_factors(features),
+        "model_scores": job_model_scores(latest_job_id, raw_row) if latest_job_id else None,
+    }
 
 
 @app.get("/recommendations")

@@ -1,11 +1,16 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import {
   Activity,
+  Brain,
   Calendar,
   ClipboardList,
+  Clock,
   Heart,
+  Stethoscope,
+  TrendingUp,
 } from "lucide-react";
 import {
   CartesianGrid,
@@ -22,8 +27,14 @@ import { Button } from "@/components/ui/Button";
 import { RiskFactorsChart } from "@/components/dashboard/RiskFactorsChart";
 import { usePrediction } from "@/components/prediction/PredictionProvider";
 import { usePredictionHistory } from "@/hooks/usePredictionHistory";
+import { useAuth } from "@/hooks/useAuth";
+import { api } from "@/lib/api";
 import { healthTrendData, quickRecommendations } from "@/lib/dashboard-data";
-import type { PredictionRecord } from "@/types/prediction";
+import type {
+  PatientRiskFactor,
+  PredictionRecord,
+} from "@/types/prediction";
+import type { Recommendation } from "@/types/recommendations";
 import {
   RISK_CONFIG,
   riskLevelFromProbability,
@@ -34,6 +45,15 @@ const QUICK_REC_ICONS: Record<string, React.ElementType> = {
   activity: Activity,
   heart: Heart,
   clipboard: ClipboardList,
+};
+
+const CATEGORY_ICONS: Record<string, { icon: React.ElementType; color: string }> = {
+  Exercise: { icon: Activity, color: "#2A9E6B" },
+  Diet: { icon: Heart, color: "#0D7A8A" },
+  Monitoring: { icon: Stethoscope, color: "#C8821A" },
+  Weight: { icon: TrendingUp, color: "#6264A0" },
+  Sleep: { icon: Clock, color: "#6366B1" },
+  Stress: { icon: Brain, color: "#C0453A" },
 };
 
 function toTrend(records: PredictionRecord[]) {
@@ -50,6 +70,45 @@ function toTrend(records: PredictionRecord[]) {
 export default function PatientDashboard() {
   const { prediction } = usePrediction();
   const { records } = usePredictionHistory();
+  const { user } = useAuth();
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [factors, setFactors] = useState<PatientRiskFactor[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      try {
+        const data = await api.getRecommendations();
+        if (!cancelled) setRecommendations(data.recommendations);
+      } catch {
+        // fall back to static recommendations
+      }
+      try {
+        const rf = await api.getRiskFactors();
+        if (!cancelled) setFactors(rf.factors);
+      } catch {
+        // fall back to static risk factors
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const firstName = user?.full_name?.trim().split(/\s+/)[0] || "there";
+  const quickList =
+    recommendations.length > 0
+      ? recommendations.slice(0, 3).map((r) => {
+          const style = CATEGORY_ICONS[r.category] ?? { icon: Activity, color: "#0D7A8A" };
+          return { icon: style.icon, color: style.color, text: r.title };
+        })
+      : quickRecommendations.map((r) => ({
+          icon: QUICK_REC_ICONS[r.iconName] ?? Activity,
+          color: r.color,
+          text: r.text,
+        }));
 
   const hasPrediction = Boolean(prediction);
   const historyTrend = toTrend(records);
@@ -79,7 +138,7 @@ export default function PatientDashboard() {
           className="text-xl md:text-2xl font-bold text-foreground"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Good morning, Alex 👋
+          Good morning, {firstName} 👋
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
           Here&apos;s your health summary for {new Date().toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}
@@ -147,7 +206,7 @@ export default function PatientDashboard() {
           >
             Top Risk Factors
           </h3>
-          <RiskFactorsChart height={200} withAxis={false} />
+          <RiskFactorsChart height={200} withAxis={false} data={factors} />
         </div>
 
         <div className="bg-white rounded-xl border border-border p-6 flex flex-col gap-3">
@@ -157,8 +216,8 @@ export default function PatientDashboard() {
           >
             Quick Recommendations
           </h3>
-          {quickRecommendations.map((r, i) => {
-            const Icon = QUICK_REC_ICONS[r.iconName];
+          {quickList.map((r, i) => {
+            const Icon = r.icon;
             return (
               <div
                 key={i}

@@ -50,3 +50,12 @@ class FeedbackCreate(BaseModel):
 
 class DatasetUpload(BaseModel):
     csv: str
+
+
+class ForgotPassword(BaseModel):
+    email: EmailStr
+
+
+class ResetPassword(BaseModel):
+    token: str
+    new_password: str

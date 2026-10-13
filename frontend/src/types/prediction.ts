@@ -68,3 +68,29 @@ export function riskLevelFromProbability(probability: number): RiskLevel {
 export function riskScoreFromProbability(probability: number): number {
   return Math.round(probability * 100);
 }
+
+export interface PatientRiskFactor {
+  name: string;
+  impact: number;
+  fill: string;
+  value: number;
+}
+
+export interface PatientModelScore {
+  model: string;
+  score: number;
+}
+
+export interface RiskFactorsResponse {
+  has_prediction: boolean;
+  prediction: 0 | 1 | null;
+  risk_label: "Diabetic" | "Not Diabetic" | null;
+  risk_probability: number | null;
+  factors: PatientRiskFactor[];
+  model_scores: PatientModelScore[] | null;
+}
+
+export interface ForgotPasswordResponse {
+  message: string;
+  reset_token: string | null;
+}

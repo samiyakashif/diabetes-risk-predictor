@@ -1,14 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
   AlertCircle,
+  Brain,
+  Clock,
   Download,
   Heart,
   RefreshCw,
   Stethoscope,
+  TrendingUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { RiskBadge } from "@/components/ui/RiskBadge";
@@ -17,11 +20,25 @@ import { SectionHeader } from "@/components/ui/SectionHeader";
 import { RiskFactorsChart } from "@/components/dashboard/RiskFactorsChart";
 import { usePrediction } from "@/components/prediction/PredictionProvider";
 import { api, ApiError } from "@/lib/api";
+import type { PatientModelScore, PatientRiskFactor } from "@/types/prediction";
+import type { Recommendation } from "@/types/recommendations";
 import {
   RISK_CONFIG,
   riskLevelFromProbability,
   riskScoreFromProbability,
 } from "@/types/prediction";
+
+const CATEGORY_STYLE: Record<
+  string,
+  { icon: React.ElementType; color: string }
+> = {
+  Exercise: { icon: Activity, color: "#2A9E6B" },
+  Diet: { icon: Heart, color: "#0D7A8A" },
+  Monitoring: { icon: Stethoscope, color: "#C8821A" },
+  Weight: { icon: TrendingUp, color: "#6264A0" },
+  Sleep: { icon: Clock, color: "#6366B1" },
+  Stress: { icon: Brain, color: "#C0453A" },
+};
 
 const RECOMMENDATIONS = [
   {
@@ -50,6 +67,34 @@ const RECOMMENDATIONS = [
 export default function PredictionPage() {
   const { prediction } = usePrediction();
   const [downloading, setDownloading] = useState(false);
+  const [factors, setFactors] = useState<PatientRiskFactor[]>([]);
+  const [modelScores, setModelScores] = useState<PatientModelScore[]>([]);
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
+      try {
+        const rf = await api.getRiskFactors();
+        if (cancelled) return;
+        setFactors(rf.factors);
+        if (rf.model_scores) setModelScores(rf.model_scores);
+      } catch {
+        // fall back to static risk factors
+      }
+      try {
+        const data = await api.getRecommendations();
+        if (!cancelled) setRecommendations(data.recommendations);
+      } catch {
+        // fall back to static recommendations
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const downloadReport = async () => {
     setDownloading(true);
@@ -96,6 +141,27 @@ export default function PredictionPage() {
   const score = riskScoreFromProbability(result.risk_probability);
   const config = RISK_CONFIG[level];
   const riskLabel = result.risk_label === "Diabetic" ? "Diabetic" : "Non-Diabetic";
+  const displayRecs =
+    recommendations.length > 0
+      ? recommendations.slice(0, 3).map((r) => {
+          const style = CATEGORY_STYLE[r.category] ?? { icon: Activity, color: "#0D7A8A" };
+          return {
+            key: r.title,
+            icon: style.icon,
+            color: style.color,
+            tag: r.impact,
+            title: r.title,
+            desc: r.description,
+          };
+        })
+      : RECOMMENDATIONS.map((r) => ({
+          key: r.title,
+          icon: r.icon,
+          color: r.color,
+          tag: r.urgency,
+          title: r.title,
+          desc: r.desc,
+        }));
 
   return (
     <div className="max-w-4xl">
@@ -141,13 +207,29 @@ export default function PredictionPage() {
             Risk Score
           </h3>
           <RiskGauge score={score} level={level} />
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground">
-              Ensemble confidence:{" "}
-              <span className="font-semibold text-foreground font-mono">
-                94.2%
-              </span>
-            </p>
+          <div className="text-center w-full">
+            {modelScores.length > 0 ? (
+              <div className="grid grid-cols-2 gap-1.5">
+                {modelScores.map((m) => (
+                  <div
+                    key={m.model}
+                    className="flex items-center justify-between gap-2 rounded-lg bg-muted px-2.5 py-1.5 text-xs"
+                  >
+                    <span className="text-muted-foreground truncate">{m.model}</span>
+                    <span className="font-mono font-semibold text-foreground">
+                      {m.score}/100
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Ensemble risk:{" "}
+                <span className="font-semibold text-foreground font-mono">
+                  {Math.round(result.risk_probability * 100)}%
+                </span>
+              </p>
+            )}
           </div>
         </div>
 
@@ -158,7 +240,7 @@ export default function PredictionPage() {
           >
             Top Contributing Factors
           </h3>
-          <RiskFactorsChart height={220} barSize={14} />
+          <RiskFactorsChart height={220} barSize={14} data={factors} />
         </div>
       </div>
 
@@ -181,8 +263,8 @@ export default function PredictionPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mb-4 md:mb-6">
-        {RECOMMENDATIONS.map((r) => (
-          <div key={r.title} className="bg-white rounded-xl border border-border p-5">
+        {displayRecs.map((r) => (
+          <div key={r.key} className="bg-white rounded-xl border border-border p-5">
             <div className="flex items-center gap-2 mb-3">
               <div
                 className="w-8 h-8 rounded-lg flex items-center justify-center"
@@ -194,7 +276,7 @@ export default function PredictionPage() {
                 className="text-xs font-semibold px-2 py-0.5 rounded-full"
                 style={{ backgroundColor: `${r.color}18`, color: r.color }}
               >
-                {r.urgency}
+                {r.tag}
               </span>
             </div>
             <h4

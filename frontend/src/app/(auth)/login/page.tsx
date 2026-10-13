@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthShell } from "@/components/auth/AuthShell";
+import { ForgotPasswordDialog } from "@/components/auth/ForgotPasswordDialog";
 import { Button } from "@/components/ui/Button";
 import { InputField } from "@/components/ui/InputField";
 import { api, ApiError } from "@/lib/api";
@@ -25,6 +26,7 @@ export default function LoginPage() {
   const [selectedRole, setSelectedRole] = useState<string>("patient");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,7 +113,11 @@ export default function LoginPage() {
         </div>
 
         <div className="text-right">
-          <button type="button" className="text-xs text-primary hover:underline">
+          <button
+            type="button"
+            onClick={() => setForgotOpen(true)}
+            className="text-xs text-primary hover:underline"
+          >
             Forgot password?
           </button>
         </div>
@@ -133,6 +139,11 @@ export default function LoginPage() {
           Sign up
         </a>
       </p>
+
+      <ForgotPasswordDialog
+        open={forgotOpen}
+        onClose={() => setForgotOpen(false)}
+      />
     </AuthShell>
   );
 }

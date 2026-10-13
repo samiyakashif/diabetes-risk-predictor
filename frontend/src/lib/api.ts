@@ -4,6 +4,8 @@ import type {
 import type {
   PredictionResult,
   PredictionRecord,
+  RiskFactorsResponse,
+  ForgotPasswordResponse,
 } from "@/types/prediction";
 import type {
   Token,
@@ -266,6 +268,24 @@ export const api = {
 
   getPredictions() {
     return request<PredictionRecord[]>("/predictions", {}, true);
+  },
+
+  getRiskFactors() {
+    return request<RiskFactorsResponse>("/risk-factors", {}, true);
+  },
+
+  forgotPassword(email: string) {
+    return request<ForgotPasswordResponse>("/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  resetPassword(token: string, newPassword: string) {
+    return request<{ message: string }>("/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
   },
 
   changePassword(currentPassword: string, newPassword: string) {
